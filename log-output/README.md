@@ -7,8 +7,8 @@ A simple Go app to log uuid to console with timestamps.
 
 ## Running Locally
 ```go
-git clone 
-cd log-output
+git clone https://github.com/samuel-jinadu/devops-with-kubernetes-2026.git
+cd devops-with-kubernetes-2026/log-output
 go run . 
 
 // Sample output
