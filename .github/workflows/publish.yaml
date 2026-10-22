@@ -25,6 +25,7 @@ jobs:
         with:
             version: v0.19.1
       - name: Build and push
+        working-directory: log-output
         run: ko build ./log-output --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/log-output

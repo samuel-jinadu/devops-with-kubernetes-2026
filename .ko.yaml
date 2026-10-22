@@ -3,8 +3,3 @@ baseImportPaths: true
 
 # Disable SBOM generation
 sbom: none
-
-builds:
-  - id: log-output
-    dir: ./log-output
-    main: .
