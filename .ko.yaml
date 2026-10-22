@@ -1,0 +1,5 @@
+# Use a clean base repository name
+baseImportPaths: true
+
+# Disable SBOM generation
+sbom: none

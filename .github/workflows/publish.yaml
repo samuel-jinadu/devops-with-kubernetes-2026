@@ -1,0 +1,30 @@
+name: Publish image to GHCR
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write          
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: log-output/go.mod
+          cache: true
+
+      - name: Setup Ko
+        uses: ko-build/setup-ko@v0.8
+        with:
+            version: v0.19.1
+      - name: Build and push
+        run: ko build ./log-output --bare --sbom=none --tags=${{ github.ref_name }}
+        env:
+          KO_DOCKER_REPO: ghcr.io/samuel-jinadu/log-output
