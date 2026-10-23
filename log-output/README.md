@@ -17,3 +17,8 @@ go run .
 // Ctl-C to stop
 
 ```
+
+## Running in a Kubernetes Environment
+```bash
+kubectl create deployment log-output-app --image=ghcr.io/samuel-jinadu/log-output:main
+```

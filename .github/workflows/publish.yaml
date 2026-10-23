@@ -13,7 +13,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v7
         with:
@@ -29,3 +29,8 @@ jobs:
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/log-output
+      - name: Build and push
+        working-directory: todo-app
+        run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
+        env:
+          KO_DOCKER_REPO: ghcr.io/samuel-jinadu/todo-app
