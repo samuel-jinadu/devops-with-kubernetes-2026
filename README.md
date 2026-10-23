@@ -8,6 +8,7 @@
 - [Exercise 1.5](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.5)
 - [Exercise 1.6](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.6)
 - [Exercise 1.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.7)
+- [Exercise 1.8](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.8)
 
 ## Notes
 - Deploy: `kubectl apply -f manifests/deployment.yaml`
