@@ -24,6 +24,7 @@ if k3d cluster list 2>/dev/null | grep -q "^${CLUSTER_NAME}"; then
 else
   echo "▶ Creating new cluster '${CLUSTER_NAME}'..."
   k3d cluster create ${CLUSTER_NAME} \
+    --api-port 127.0.0.1:6443 \
     --servers 1 \
     --agents 2 \
     --port "8080:80@loadbalancer" \
@@ -38,6 +39,13 @@ echo "▶ Merging kubeconfig..."
 k3d kubeconfig merge ${CLUSTER_NAME} \
   --kubeconfig-merge-default \
   --kubeconfig-switch-context
+
+# Fix any host-only addresses that would be unreachable from inside the container
+# (needed for clusters created before --api-port 127.0.0.1:6443 was added).
+sed -i 's|https://0.0.0.0|https://127.0.0.1|g; s|https://host.docker.internal|https://127.0.0.1|g' \
+  "${HOME}/.kube/config" 2>/dev/null || true
+
+echo "  ✅ kubeconfig written to ${HOME}/.kube/config"
 
 # Ensure KUBECONFIG is set in .bashrc for all future terminals
 if ! grep -q "export KUBECONFIG" ~/.bashrc 2>/dev/null; then

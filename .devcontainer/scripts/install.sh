@@ -88,6 +88,63 @@ BASHRC
   echo "  ✅ Aliases and completion configured"
 fi
 
+# ── Go ───────────────────────────────────────────────────────────────────────
+if [ -x /usr/local/go/bin/go ] || command -v go &>/dev/null; then
+  GO_INSTALLED_VERSION=$(
+    /usr/local/go/bin/go version 2>/dev/null || go version
+  ) 
+  echo "▶ Go already installed (${GO_INSTALLED_VERSION}) — skipping"
+else
+  echo ""
+  echo "▶ Installing Go..."
+
+  # Prefer the version declared in go.mod; fall back to the latest stable release.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+  GO_VERSION=""
+  for mod in "${WORKSPACE_ROOT}/log-output/go.mod" "${WORKSPACE_ROOT}/todo-app/go.mod"; do
+    if [ -f "$mod" ]; then
+      GO_VERSION=$(awk '/^go /{print $2; exit}' "$mod")
+      break
+    fi
+  done
+  if [ -z "$GO_VERSION" ]; then
+    GO_VERSION=$(curl -fsS 'https://go.dev/VERSION?m=text' | head -1 | sed 's/^go//')
+  fi
+
+  case "$(uname -m)" in
+    x86_64)  GO_ARCH="amd64" ;;
+    aarch64|arm64) GO_ARCH="arm64" ;;
+    *) echo "  ⚠️  Unsupported architecture: $(uname -m) — skipping"; GO_ARCH="" ;;
+  esac
+
+  if [ -z "$GO_VERSION" ] || [ -z "$GO_ARCH" ]; then
+    echo "  ⚠️  Could not determine Go version or architecture — skipping"
+  else
+    if curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz; then
+      sudo rm -rf /usr/local/go
+      sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+      rm -f /tmp/go.tar.gz
+      echo "  ✅ Go ${GO_VERSION} installed"
+    else
+      echo "  ⚠️  Go ${GO_VERSION} download failed — skipping"
+    fi
+  fi
+
+  # Persist PATH for future shells (idempotent)
+  if ! grep -q "/usr/local/go/bin" ~/.bashrc 2>/dev/null; then
+    cat >> ~/.bashrc << 'BASHRC'
+
+# ── Go ──────────────────────────────────────────────────────────────────────
+export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
+BASHRC
+  fi
+
+  # And for the current script's environment
+  export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
+fi
+
 # ── ensure .kube dir exists ───────────────────────────────────────────────────
 mkdir -p ~/.kube
 

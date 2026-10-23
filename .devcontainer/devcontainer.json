@@ -43,6 +43,6 @@
   },
 
   "remoteEnv": {
-    "KUBECONFIG": "/root/.kube/config"
+    "KUBECONFIG": "/home/vscode/.kube/config"
   }
 }

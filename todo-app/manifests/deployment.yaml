@@ -15,3 +15,6 @@ spec:
       containers:
         - name: todo-app
           image: ghcr.io/samuel-jinadu/todo-app:main
+          env:
+            - name: PORT
+              value: "8090"
