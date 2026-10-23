@@ -29,9 +29,17 @@ else
   --agents 2 \
   --port "8080:80@loadbalancer" \
   --port "8443:443@loadbalancer" \
-  --port "8082:30080@agent:0" \
-  --port "8083:30081@agent:0" \
   --wait
+  # changed from these because i no longer use node ports
+  # k3d cluster create "${CLUSTER_NAME}" \
+  # --api-port 127.0.0.1:6443 \
+  # --servers 1 \
+  # --agents 2 \
+  # --port "8080:80@loadbalancer" \
+  # --port "8443:443@loadbalancer" \
+  # --port "8082:30080@agent:0" \
+  # --port "8083:30081@agent:0" \
+  # --wait
   echo "  ✅ Cluster created"
 fi
 
