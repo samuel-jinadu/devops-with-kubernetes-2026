@@ -8,9 +8,10 @@
 - [Exercise 1.5](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.5)
 
 ## Notes
-- Command to deploy: `kubectl apply -f manifests/deployment.yaml`
-- Command to extract config for lens: `kubectl config view --minify --raw`
-- Command to port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
+- Deploy: `kubectl apply -f manifests/deployment.yaml`
+- Extract config for lens: `kubectl config view --minify --raw`
+- Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
+- Create default cluster with published ports: `k3d cluster create --port 8082:30080@agent:0 -p 8081:80@loadbalancer --agents 2`
 
 ## Sources
 - .devcontainer code sourced from [lbrenman/k3d-codespace](https://github.com/lbrenman/k3d-codespace). Used to make a k3d codespace.

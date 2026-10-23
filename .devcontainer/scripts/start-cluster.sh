@@ -23,13 +23,15 @@ if k3d cluster list 2>/dev/null | grep -q "^${CLUSTER_NAME}"; then
   fi
 else
   echo "▶ Creating new cluster '${CLUSTER_NAME}'..."
-  k3d cluster create ${CLUSTER_NAME} \
-    --api-port 127.0.0.1:6443 \
-    --servers 1 \
-    --agents 2 \
-    --port "8080:80@loadbalancer" \
-    --port "8443:443@loadbalancer" \
-    --wait
+  k3d cluster create "${CLUSTER_NAME}" \
+  --api-port 127.0.0.1:6443 \
+  --servers 1 \
+  --agents 2 \
+  --port "8080:80@loadbalancer" \
+  --port "8443:443@loadbalancer" \
+  --port "8082:30080@agent:0" \
+  --port "8083:30081@agent:0" \
+  --wait
   echo "  ✅ Cluster created"
 fi
 
