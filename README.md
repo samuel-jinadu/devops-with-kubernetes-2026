@@ -7,7 +7,9 @@
 - [Exercise 1.4](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/1.4)
 
 ## Notes
-- `kubectl apply -f manifests/deployment.yaml`
+- Command to deploy: `kubectl apply -f manifests/deployment.yaml`
+- Command to extract config for lens: `kubectl config view --minify --raw`
+- Command to port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
 
 ## Sources
 - .devcontainer code sourced from [lbrenman/k3d-codespace](https://github.com/lbrenman/k3d-codespace). Used to make a k3d codespace.
