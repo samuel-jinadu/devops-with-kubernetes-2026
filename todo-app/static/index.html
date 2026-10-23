@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>Todos</title></head>
+<body>
+  <h1>Todos</h1>
+  <ul>
+    {{ range .Todos }}
+      <li>{{ .Title }}</li>
+    {{ end }}
+  </ul>
+  <p>Generated at {{ .Now }}</p>
+</body>
+</html>
