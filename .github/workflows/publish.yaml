@@ -35,7 +35,7 @@ jobs:
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/todo-app
       - name: Build and push
-        working-directory: ping-pong-app
+        working-directory: ping-pong
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/ping-pong-app
