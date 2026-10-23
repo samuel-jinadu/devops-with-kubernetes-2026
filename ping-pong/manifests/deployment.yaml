@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: pingpong
-          image: ghcr.io/samuel-jinadu/ping-pong-app
+          image: ghcr.io/samuel-jinadu/ping-pong-app:main
           env:
             - name: PORT
               value: "9090"
