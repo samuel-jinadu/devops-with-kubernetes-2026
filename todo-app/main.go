@@ -57,6 +57,12 @@ func main() {
 }
 
 func acquireImageLoop() {
+	filepath := os.Getenv("IMAGEPATH")
+	if fileinfo, err := os.Stat(filepath); err == nil {
+		if elapsed := time.Since(fileinfo.ModTime()); elapsed < 10*time.Minute {
+			time.Sleep(10*time.Minute - elapsed)
+		}
+	}
 	for {
 		resp, err := http.Get("https://picsum.photos/400/300")
 		if err != nil || resp.StatusCode != 200 {
@@ -64,8 +70,6 @@ func acquireImageLoop() {
 			time.Sleep(10 * time.Minute)
 			continue
 		}
-
-		filepath := os.Getenv("IMAGEPATH")
 
 		file, err := os.Create(filepath)
 		if err != nil {
