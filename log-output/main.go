@@ -3,10 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 	"uuid"
 )
@@ -18,81 +19,70 @@ type JSONResponse struct {
 }
 
 func main() {
-
-	jsonPath := os.Getenv("FILEPATH")
-	which := os.Getenv("WHICH")
-	switch which {
-	case "Generator":
-		log_data(jsonPath)
-	case "Reader":
-		server(jsonPath)
-	default:
-		log.Fatalf("WHICH environmenatal variable only accepts Generator or Reader")
-	}
-
+	channel := make(chan JSONResponse, 1)
+	go log_loop(channel)
+	server(channel)
 }
 
-func ReadIntFromFile(filename string) (int, error) {
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return 0, err
-	}
-
-	return strconv.Atoi(string(data))
-}
-
-func log_data(path string) {
+func log_loop(channel chan JSONResponse) {
 	payload := uuid.New()
 	for {
 		timestamp := time.Now().UTC().String()
-		pingpongPath := os.Getenv("PINGPONGPATH")
-		count, err := ReadIntFromFile(pingpongPath)
+		output := fmt.Sprintf("%s: %s\n", timestamp, payload.String())
+		fmt.Print(output)
+		pingpongurl := os.Getenv("PINGPONGURL")
+		resp, err := http.Get(pingpongurl)
 		if err != nil {
-			log.Print("Reading pingpong path failed!\n")
+			fmt.Printf("An error ocurred when trying to get count from ping pong: %v\n", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
-		data := JSONResponse{
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("Error reading response body:", err)
+			return
+		}
+
+		// Clean up whitespace/newlines from the response string
+		bodyString := strings.TrimSpace(string(bodyBytes))
+
+		// Convert string to integer
+		pingpongVal, err := strconv.Atoi(bodyString)
+		if err != nil {
+			fmt.Println("Error converting string to int:", err)
+			return
+		}
+		resp.Body.Close()
+		channel <- JSONResponse{
 			Timestamp:   timestamp,
 			CurrentUUID: payload.String(),
-			Pingpong:    count,
+			Pingpong:    pingpongVal,
 		}
-
-		jsonifiedData, err := json.MarshalIndent(data, "", "    ")
-		if err != nil {
-			log.Print("JSON Marshalling failed!\n")
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		log.Printf("Writing to path: %s\n", path)
-		err = os.WriteFile(path, jsonifiedData, 0644)
-
-		if err != nil {
-			log.Printf("Error writing file: %v", err)
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
 		time.Sleep(5 * time.Second)
-		// drainChannel(channel)
+		drainChannel(channel)
 	}
 }
 
-func server(path string) {
+func drainChannel(ch chan JSONResponse) {
+	for {
+		select {
+		case <-ch:
+			// Item received and discarded
+		default:
+			// Channel is empty, break the loop
+			return
+		}
+	}
+}
+
+func server(channel chan JSONResponse) {
 	port := os.Getenv("PORT")
 	fmt.Printf("Server started on port %s\n", port)
 	port = ":" + port
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			http.Error(w, "File not found", http.StatusNotFound)
-			return
-		}
-
-		w.Header().Add("Content-Type", "application/json")
-		w.Write(data)
+		data := <-channel
+		json.NewEncoder(w).Encode(data)
 	})
 	http.ListenAndServe(port, nil)
 }

@@ -25,5 +25,3 @@ spec:
           env:
             - name: PORT
               value: "9090"
-            - name: FILEPATH
-              value: /files/pingpong.txt

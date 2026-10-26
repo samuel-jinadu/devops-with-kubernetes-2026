@@ -41,7 +41,5 @@ spec:
           env:
             - name: PORT
               value: "9090"
-            - name: FILEPATH
-              value: /files/data.json
-            - name: WHICH
-              value: Reader
+            - name: PINGPONGURL
+              value: http://pingpong-service-cluster-ip:2345/count
