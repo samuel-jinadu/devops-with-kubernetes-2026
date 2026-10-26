@@ -12,9 +12,32 @@ spec:
       labels:
         app: hashgenerator
     spec:
+      volumes:                          # ← pod-level, declared once
+        - name: shared-files
+          emptyDir: {}
       containers:
-        - name: hashgenerator
+        - name: hashgenerator-A
           image: ghcr.io/samuel-jinadu/log-output:main
+          volumeMounts:
+            - name: shared-files
+              mountPath: /files
+          env:
+            - name: FILEPATH
+              value: /files/data.json
+          env:
+            - name: WHICH
+              value: Generator
+        - name: hashgenerator-B
+          image: ghcr.io/samuel-jinadu/log-output:main
+          volumeMounts:
+            - name: shared-files
+              mountPath: /files
           env:
             - name: PORT
               value: "9090"
+          env:
+            - name: FILEPATH
+              value: /files/data.json
+          env:
+            - name: WHICH
+              value: Reader
