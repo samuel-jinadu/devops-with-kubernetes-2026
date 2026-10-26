@@ -6,6 +6,13 @@ spec:
   rules:
   - http:
       paths:
+      - path: /submit
+        pathType: Prefix
+        backend:
+          service:
+            name: todo-backend-service-cluster-ip
+            port:
+              number: 2345
       - path: /backend
         pathType: Prefix
         backend:

@@ -28,6 +28,6 @@ spec:
             - name: IMAGEPATH
               value: /files/image.jpg
             - name: POSTURL
-              value: todo-backend-service-cluster-ip:2345/submit
+              value: /submit
             - name: TODOSURL
-              value: todo-backend-service-cluster-ip:2345/
+              value: http://todo-backend-service-cluster-ip:2345/

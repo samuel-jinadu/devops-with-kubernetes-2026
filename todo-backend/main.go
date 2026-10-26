@@ -31,6 +31,7 @@ func main() {
 		mutex.Lock()
 		defer mutex.Unlock()
 		todos = append(todos, todo)
+		http.Redirect(w, r, os.Getenv("TODOAPP_ROUTE"), http.StatusSeeOther) 
 	})
 
 	port := os.Getenv("PORT")

@@ -25,3 +25,5 @@ spec:
           env:
             - name: PORT
               value: "8090"
+            - name: TODOAPP_ROUTE
+              value: /
