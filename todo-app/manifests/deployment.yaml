@@ -12,9 +12,18 @@ spec:
       labels:
         app: todo-app
     spec:
+      volumes:
+        - name: pingpong-data           # PVC: cross-pod share with ping-pong and log output
+          persistentVolumeClaim:
+            claimName: shared-claim
       containers:
         - name: todo-app
           image: ghcr.io/samuel-jinadu/todo-app:main
+          volumeMounts:
+            - name: pingpong-data
+              mountPath: /files
           env:
             - name: PORT
               value: "8090"
+            - name: IMAGEPATH
+              value: /files/image.jpg
