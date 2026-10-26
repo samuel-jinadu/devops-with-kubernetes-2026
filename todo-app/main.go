@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -14,14 +15,11 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-type Todo struct {
-	Title string
-}
-
 type PageData struct {
-	Todos []Todo
-	Now   time.Time
-	Image string
+	Todos   []string
+	Now     time.Time
+	Image   string
+	PostURL string
 }
 
 func main() {
@@ -34,14 +32,29 @@ func main() {
 	tmpl := template.Must(template.ParseFS(staticFS, "static/index.html"))
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var todos []string
+
+		resp, err := http.Get(os.Getenv("TODOSURL"))
+		if err != nil {
+			fmt.Printf("An error occurred when trying to get todos: %v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("unexpected status: %s\n", resp.Status)
+			return
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&todos); err != nil {
+			fmt.Printf("error decoding todos: %v\n", err)
+			return
+		}
 		data := PageData{
-			Todos: []Todo{
-				{Title: "Learn Go templates"},
-				{Title: "Add some CSS"},
-				{Title: "Ship it"},
-			},
-			Now:   time.Now(),
-			Image: os.Getenv("IMAGEPATH"),
+			Todos:   todos,
+			Now:     time.Now(),
+			Image:   os.Getenv("IMAGEPATH"),
+			PostURL: os.Getenv("POSTURL"),
 		}
 
 		if err := tmpl.Execute(w, data); err != nil {

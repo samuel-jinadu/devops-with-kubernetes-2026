@@ -87,7 +87,7 @@
   <img class="top-image" src="{{ .Image }}" alt="Forest">
 
   <!-- NEW: The Input Form -->
-  <form class="todo-form" action="/" method="POST">
+  <form class="todo-form" action="{{ .PostURL }}" method="POST">
     <!-- maxlength="140" stops anything over 140 characters -->
     <input 
       type="text" 
@@ -101,7 +101,9 @@
 
   <ul>
     {{ range .Todos }}
-      <li>{{ .Title }}</li>
+      <li>{{ . }}</li>
+    {{ else }}
+      <li>No todos yet.</li>
     {{ end }}
   </ul>
 

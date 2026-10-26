@@ -1,2 +1,2 @@
 #!/bin/bash
-PORT=8080 IMAGEPATH=image.jpg go run .
+PORT=8090 IMAGEPATH=image.jpg TODOSURL=http://localhost:8080/ POSTURL=http://localhost:8080/submit go run .
