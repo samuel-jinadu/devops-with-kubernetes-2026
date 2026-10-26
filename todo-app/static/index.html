@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <title>Todo App</title>
   <style>
-    /* 1. Center everything and use a soft gray background */
     body {
       font-family: system-ui, sans-serif;
       background-color: #f9f9f9;
@@ -13,29 +12,58 @@
       padding: 40px 16px;
     }
 
-    /* 2. Big, bold title */
     h1 {
       font-size: 2rem;
       color: #333;
       margin-bottom: 24px;
     }
 
-    /* 3. The image styling */
     .top-image {
       width: 100%;
-      max-width: 400px; /* Prevents it from getting too huge on big screens */
-      border-radius: 12px; /* Rounded corners */
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); /* Soft shadow */
+      max-width: 400px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
       margin-bottom: 32px;
     }
 
-    /* 4. The list styling */
+    /* --- NEW: Form and Input styling --- */
+    .todo-form {
+      display: flex;
+      justify-content: center;
+      gap: 8px; /* Space between input and button */
+      margin-bottom: 32px;
+    }
+
+    .todo-form input {
+      padding: 12px 16px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      width: 100%;
+      max-width: 280px;
+    }
+
+    .todo-form button {
+      padding: 12px 20px;
+      font-size: 1rem;
+      background-color: #333;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .todo-form button:hover {
+      background-color: #555;
+    }
+
+    /* --- List styling --- */
     ul {
       list-style: none;
       padding: 0;
       max-width: 400px;
-      margin: 0 auto 32px auto; /* Centers the list block */
-      text-align: left; /* Keeps text left-aligned so it's easy to read */
+      margin: 0 auto 32px auto;
+      text-align: left;
     }
 
     li {
@@ -46,7 +74,6 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     }
 
-    /* 5. Footer text */
     .footer {
       color: #777;
       font-size: 0.9rem;
@@ -57,17 +84,27 @@
 
   <h1>Todo App</h1>
 
-  <!-- The Image -->
   <img class="top-image" src="{{ .Image }}" alt="Forest">
 
-  <!-- The List -->
+  <!-- NEW: The Input Form -->
+  <form class="todo-form" action="/" method="POST">
+    <!-- maxlength="140" stops anything over 140 characters -->
+    <input 
+      type="text" 
+      name="todo" 
+      maxlength="140" 
+      placeholder="What needs doing? (Max 140)" 
+      required
+    >
+    <button type="submit">Add</button>
+  </form>
+
   <ul>
     {{ range .Todos }}
       <li>{{ .Title }}</li>
     {{ end }}
   </ul>
 
-  <!-- The Footer -->
   <p class="footer">DevOps with Kubernetes 2026</p>
 
 </body>
