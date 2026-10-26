@@ -16,7 +16,7 @@ spec:
         - name: shared-files
           emptyDir: {}
       containers:
-        - name: hashgenerator-A
+        - name: hashgenerator-a
           image: ghcr.io/samuel-jinadu/log-output:main
           volumeMounts:
             - name: shared-files
@@ -24,10 +24,9 @@ spec:
           env:
             - name: FILEPATH
               value: /files/data.json
-          env:
             - name: WHICH
               value: Generator
-        - name: hashgenerator-B
+        - name: hashgenerator-b
           image: ghcr.io/samuel-jinadu/log-output:main
           volumeMounts:
             - name: shared-files
@@ -35,9 +34,7 @@ spec:
           env:
             - name: PORT
               value: "9090"
-          env:
             - name: FILEPATH
               value: /files/data.json
-          env:
             - name: WHICH
               value: Reader
