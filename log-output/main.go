@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 	"uuid"
 )
@@ -13,6 +14,7 @@ import (
 type JSONResponse struct {
 	Timestamp   string `json:"timestamp"`
 	CurrentUUID string `json:"current_uuid"`
+	Pingpong    int    `json:"Ping / Pongs"`
 }
 
 func main() {
@@ -25,20 +27,35 @@ func main() {
 	case "Reader":
 		server(jsonPath)
 	default:
-		log.Fatalf("WHICH environmenatal variabl passed only accepts Generator or Reader")
+		log.Fatalf("WHICH environmenatal variable only accepts Generator or Reader")
 	}
 
+}
+
+func ReadIntFromFile(filename string) (int, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return 0, err
+	}
+
+	return strconv.Atoi(string(data))
 }
 
 func log_data(path string) {
 	payload := uuid.New()
 	for {
 		timestamp := time.Now().UTC().String()
-		// output := fmt.Sprintf("%s: %s\n", timestamp, payload.String())
-		// fmt.Print(output)
+		pingpongPath := os.Getenv("PINGPONGPATH")
+		count, err := ReadIntFromFile(pingpongPath)
+		if err != nil {
+			log.Print("Reading pingpong path failed!\n")
+			time.Sleep(5 * time.Second)
+			continue
+		}
 		data := JSONResponse{
 			Timestamp:   timestamp,
 			CurrentUUID: payload.String(),
+			Pingpong:    count,
 		}
 
 		jsonifiedData, err := json.MarshalIndent(data, "", "    ")

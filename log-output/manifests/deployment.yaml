@@ -15,17 +15,24 @@ spec:
       volumes:                          # ← pod-level, declared once
         - name: shared-files
           emptyDir: {}
+        - name: pingpong-data           # PVC: cross-pod share with ping-pong
+          persistentVolumeClaim:
+            claimName: shared-claim
       containers:
         - name: hashgenerator-a
           image: ghcr.io/samuel-jinadu/log-output:main
           volumeMounts:
             - name: shared-files
               mountPath: /files
+            - name: pingpong-data
+              mountPath: /pingpong       # pingpong.txt lives here
           env:
             - name: FILEPATH
               value: /files/data.json
             - name: WHICH
               value: Generator
+            - name: PINGPONGPATH
+              value: /pingpong/pingpong.txt
         - name: hashgenerator-b
           image: ghcr.io/samuel-jinadu/log-output:main
           volumeMounts:

@@ -12,9 +12,18 @@ spec:
       labels:
         app: pingpong
     spec:
+      volumes:
+        - name: pingpong-data           # PVC: cross-pod share with ping-pong
+          persistentVolumeClaim:
+            claimName: shared-claim
       containers:
         - name: pingpong
           image: ghcr.io/samuel-jinadu/ping-pong-app:main
+          volumeMounts:
+            - name: pingpong-data
+              mountPath: /files
           env:
             - name: PORT
               value: "9090"
+            - name: FILEPATH
+              value: /files/pingpong.txt
