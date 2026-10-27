@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -17,7 +18,6 @@ var staticFS embed.FS
 
 type PageData struct {
 	Todos   []string
-	Now     time.Time
 	Image   string
 	PostURL string
 }
@@ -52,7 +52,6 @@ func main() {
 		}
 		data := PageData{
 			Todos:   todos,
-			Now:     time.Now(),
 			Image:   os.Getenv("IMAGEPATH"),
 			PostURL: os.Getenv("POSTURL"),
 		}
@@ -66,28 +65,39 @@ func main() {
 	// http.Handle("/", http.FileServer(http.FS(sub)))
 	go acquireImageLoop()
 	log.Fatal(http.ListenAndServe(port, nil))
-
 }
 
 func acquireImageLoop() {
 	filepath := os.Getenv("IMAGEPATH")
+
+	// Parse refresh interval (minutes) from env, default to 10 on error/empty.
+	refreshMins, err := strconv.Atoi(os.Getenv("IMAGEREFRESHINTERVAL_MINS"))
+	if err != nil || refreshMins <= 0 {
+		log.Printf("IMAGEREFRESHINTERVAL_MINS invalid or unset (%q); defaulting to 10 minutes",
+			os.Getenv("IMAGEREFRESHINTERVAL_MINS"))
+		refreshMins = 10
+	}
+	refreshInterval := time.Duration(refreshMins) * time.Minute
+
 	if fileinfo, err := os.Stat(filepath); err == nil {
-		if elapsed := time.Since(fileinfo.ModTime()); elapsed < 10*time.Minute {
-			time.Sleep(10*time.Minute - elapsed)
+		if elapsed := time.Since(fileinfo.ModTime()); elapsed < refreshInterval {
+			time.Sleep(refreshInterval - elapsed)
 		}
 	}
 	for {
-		resp, err := http.Get("https://picsum.photos/400/300")
+		resp, err := http.Get(os.Getenv("RANDOMPIC_URL"))
 		if err != nil || resp.StatusCode != 200 {
 			log.Printf("There was an issue getting the hero image: %v\n", err)
-			time.Sleep(10 * time.Minute)
+			resp.Body.Close()
+			time.Sleep(refreshInterval)
 			continue
 		}
 
 		file, err := os.Create(filepath)
 		if err != nil {
 			log.Printf("There was an issue writing the hero image to disk: %v\n", err)
-			time.Sleep(10 * time.Minute)
+			resp.Body.Close()
+			time.Sleep(refreshInterval)
 			continue
 		}
 		bytesWritten, err := io.Copy(file, resp.Body)
@@ -95,10 +105,10 @@ func acquireImageLoop() {
 		resp.Body.Close() // Close the network connection immediately
 		if err != nil {
 			log.Printf("There was an issue writing the hero image to disk: %v\n", err)
-			time.Sleep(10 * time.Minute)
+			time.Sleep(refreshInterval)
 			continue
 		}
 		log.Printf("%d bytes written to disk at %s", bytesWritten, filepath)
-		time.Sleep(10 * time.Minute)
+		time.Sleep(refreshInterval)
 	}
 }

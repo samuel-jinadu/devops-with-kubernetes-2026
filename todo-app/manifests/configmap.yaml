@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: todo-app-configmap
+  namespace: project
+data:
+  PORT: "8090"
+  IMAGEPATH: /files/image.jpg
+  POSTURL: /submit
+  TODOSURL: http://todo-backend-service-cluster-ip:2345/
+  RANDOMPIC_URL: "https://picsum.photos/400/300"
+  IMAGEREFRESHINTERVAL_MINS: "10"

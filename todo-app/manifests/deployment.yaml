@@ -23,12 +23,6 @@ spec:
           volumeMounts:
             - name: pingpong-data
               mountPath: /files
-          env:
-            - name: PORT
-              value: "8090"
-            - name: IMAGEPATH
-              value: /files/image.jpg
-            - name: POSTURL
-              value: /submit
-            - name: TODOSURL
-              value: http://todo-backend-service-cluster-ip:2345/
+          envFrom:
+            - configMapRef:
+                name: todo-app-configmap
