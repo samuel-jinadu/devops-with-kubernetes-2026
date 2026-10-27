@@ -65,7 +65,7 @@ func log_loop(channel chan JSONResponse) {
 			FileContent: string(fileContent),
 			MESSAGE:     os.Getenv("MESSAGE"),
 		}
-		output := fmt.Sprintf("%s: %s\nPing / Pong: %d\nfile content: %s\nMESSAGE: %s", timestamp, payload.String(), pingpongVal, string(fileContent), os.Getenv("MESSAGE"))
+		output := fmt.Sprintf("%s: %s\nPing / Pong: %d\nfile content: %sMESSAGE: %s", timestamp, payload.String(), pingpongVal, string(fileContent), os.Getenv("MESSAGE"))
 		fmt.Print(output)
 		time.Sleep(5 * time.Second)
 		drainChannel(channel)

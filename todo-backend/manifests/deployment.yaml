@@ -13,16 +13,9 @@ spec:
       labels:
         app: todo-backend
     spec:
-      volumes:
-        - name: todo-backend-data           # PVC: cross-pod share with ping-pong and log output
-          persistentVolumeClaim:
-            claimName: shared-claim
       containers:
         - name: todo-backend
           image: ghcr.io/samuel-jinadu/todo-backend:main
-          volumeMounts:
-            - name: todo-backend-data
-              mountPath: /files
           env:
             - name: PORT
               value: "8090"
