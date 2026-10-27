@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: log-output-configmap
+data:
+  MESSAGE: hello world
+  PORT: 9090
+  PINGPONGURL: http://pingpong-service-cluster-ip:2345/count
+  information.txt: |
+    this text is from file

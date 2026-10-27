@@ -13,34 +13,16 @@ spec:
       labels:
         app: hashgenerator
     spec:
-      volumes:                          # ← pod-level, declared once
-        - name: shared-files
-          emptyDir: {}
-        - name: pingpong-data           # PVC: cross-pod share with ping-pong
-          persistentVolumeClaim:
-            claimName: shared-claim
+      volumes:
+        - name: config-volume
+          configMap:
+            name: log-output-configmap
       containers:
-        - name: hashgenerator-a
+        - name: hashgenerator
           image: ghcr.io/samuel-jinadu/log-output:main
           volumeMounts:
-            - name: shared-files
-              mountPath: /files
-            - name: pingpong-data
-              mountPath: /pingpong       # pingpong.txt lives here
-          env:
-            - name: FILEPATH
-              value: /files/data.json
-            - name: WHICH
-              value: Generator
-            - name: PINGPONGPATH
-              value: /pingpong/pingpong.txt
-        - name: hashgenerator-b
-          image: ghcr.io/samuel-jinadu/log-output:main
-          volumeMounts:
-            - name: shared-files
-              mountPath: /files
-          env:
-            - name: PORT
-              value: "9090"
-            - name: PINGPONGURL
-              value: http://pingpong-service-cluster-ip:2345/count
+            - name: config-volume
+              mountPath: /config
+          envFrom:
+            - configMapRef:
+                name: log-output-configmap

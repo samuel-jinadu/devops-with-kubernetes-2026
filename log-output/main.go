@@ -16,6 +16,8 @@ type JSONResponse struct {
 	Timestamp   string `json:"timestamp"`
 	CurrentUUID string `json:"current_uuid"`
 	Pingpong    int    `json:"Ping / Pongs"`
+	MESSAGE     string `json:"MESSAGE"`
+	FileContent string `json:"file content"`
 }
 
 func main() {
@@ -28,8 +30,7 @@ func log_loop(channel chan JSONResponse) {
 	payload := uuid.New()
 	for {
 		timestamp := time.Now().UTC().String()
-		output := fmt.Sprintf("%s: %s\n", timestamp, payload.String())
-		fmt.Print(output)
+
 		pingpongurl := os.Getenv("PINGPONGURL")
 		resp, err := http.Get(pingpongurl)
 		if err != nil {
@@ -53,11 +54,19 @@ func log_loop(channel chan JSONResponse) {
 			return
 		}
 		resp.Body.Close()
+		fileContent, err := os.ReadFile("/config/information.txt")
+		if err != nil {
+			fmt.Printf("could not read /config/information.txt: %v\n", err)
+		}
 		channel <- JSONResponse{
 			Timestamp:   timestamp,
 			CurrentUUID: payload.String(),
 			Pingpong:    pingpongVal,
+			FileContent: string(fileContent),
+			MESSAGE:     os.Getenv("MESSAGE"),
 		}
+		output := fmt.Sprintf("%s: %s\nPing / Pong: %d\nfile content: %s\nMESSAGE: %s", timestamp, payload.String(), pingpongVal, string(fileContent), os.Getenv("MESSAGE"))
+		fmt.Print(output)
 		time.Sleep(5 * time.Second)
 		drainChannel(channel)
 	}
