@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gen-todo-hourly-cronjob
+  namespace: project
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0 
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: cron-job-container
+            image: curlimages/curl:8.23.0
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - URL=$(curl -sS -o /dev/null -w '%{redirect_url}' https://en.wikipedia.org/wiki/Special:Random) && curl -sS -f -o /dev/null -X POST --data-urlencode "todo=Read $URL" http://todo-backend-service-cluster-ip:2345/submit
