@@ -13,6 +13,34 @@ spec:
       labels:
         app: todo-backend
     spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:14-alpine
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dbname
+            - name: POSTGRES_HOST
+              value:  postgres-svc.exercises.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT} as ${POSTGRES_USER}..."
+              until pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}"; do
+                echo "PostgreSQL not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
       containers:
         - name: todo-backend
           image: ghcr.io/samuel-jinadu/todo-backend:main
@@ -21,3 +49,22 @@ spec:
               value: "8090"
             - name: TODOAPP_ROUTE
               value: /
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dbname
+            - name: POSTGRES_HOST
+              value:  postgres-svc.exercises.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "5432"
