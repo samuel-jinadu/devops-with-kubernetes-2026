@@ -41,6 +41,12 @@ func main() {
 		}
 
 		todo := r.PostFormValue("todo")
+		log.Printf("Backend received POST request for todo with value: %s\n", todo)
+		if len(todo) > 140 {
+			log.Printf("REJECTED todo too long (len=%d): %q", len(todo), todo)
+			http.Error(w, "todo must be ≤140 characters", http.StatusBadRequest)
+			return
+		}
 		if todo == "" {
 			http.Error(w, "todo must not be empty", http.StatusBadRequest)
 			return

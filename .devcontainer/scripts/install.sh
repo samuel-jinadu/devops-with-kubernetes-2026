@@ -173,6 +173,19 @@ else
   echo "  ✅ age installed"
 fi
 
+# ── Helm ─────────────────────────────────────────────────────────────────────
+if command -v helm &>/dev/null; then
+  echo "▶ Helm already installed ($(helm version --short 2>/dev/null)) — skipping"
+else
+  echo ""
+  echo "▶ Installing Helm..."
+  curl -fsSL -o /tmp/get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+  chmod 700 /tmp/get_helm.sh
+  /tmp/get_helm.sh
+  rm -f /tmp/get_helm.sh
+  echo "  ✅ Helm $(helm version --short 2>/dev/null) installed"
+fi
+
 # ── ensure .kube dir exists ───────────────────────────────────────────────────
 mkdir -p ~/.kube
 

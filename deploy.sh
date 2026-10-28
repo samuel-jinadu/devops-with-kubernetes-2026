@@ -1,6 +1,35 @@
 #!/bin/bash
 set -euo pipefail
 
+
+# Grafana stack (all in one namespace, idempotent)
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update
+
+# 1. Loki first — log storage
+helm upgrade --install loki grafana/loki \
+  -n monitoring --create-namespace \
+  --values helm/loki-values.yaml
+
+echo "▶ waiting for Loki…"
+kubectl -n monitoring rollout status statefulset/loki --timeout=180s || true
+# (rollout target name depends on chart version — `|| true` so a name mismatch
+# doesn't kill the whole deploy. Logs won't flow if Loki isn't ready, but the
+# deploy script should keep going so you can debug from Grafana.)
+
+# 2. Alloy — log shipper (needs Loki up)
+helm upgrade --install k8smon grafana/k8s-monitoring \
+  -n monitoring \
+  --values helm/k8smon-values.yaml
+
+# 3. Prometheus + Grafana — with Loki pre-wired as a datasource
+helm upgrade --install my-kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+  -n monitoring \
+  --values helm/monitoring-values.yaml
+
+
+# Actual application stack
 # Ensure the host dir for the local PersistentVolume exists inside the k3d agent
 docker exec k3d-k8s-lab-agent-0 mkdir -p /tmp/kube
 
