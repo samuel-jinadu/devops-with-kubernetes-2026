@@ -8,9 +8,10 @@ spec:
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300 # If a run is missed by >5min, skip it rather than pile up
   jobTemplate:
     spec:
-      backoffLimit: 0 
+      backoffLimit: 3
       template:
         spec:
           restartPolicy: Never
