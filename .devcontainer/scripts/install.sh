@@ -145,6 +145,34 @@ BASHRC
   export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
 fi
 
+# ── SOPS ─────────────────────────────────────────────────────────────────────
+if command -v sops &>/dev/null; then
+  echo "▶ sops already installed ($(sops --version | head -1)) — skipping"
+else
+  echo ""
+  echo "▶ Installing sops..."
+  SOPS_VERSION=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
+  if [ -z "$SOPS_VERSION" ]; then
+    echo "  ⚠️  Could not fetch sops version — skipping"
+  else
+    curl -sL "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops_${SOPS_VERSION#v}_amd64.deb" -o /tmp/sops.deb
+    sudo dpkg -i /tmp/sops.deb >/dev/null
+    rm -f /tmp/sops.deb
+    echo "  ✅ sops ${SOPS_VERSION} installed"
+  fi
+fi
+
+# ── age ──────────────────────────────────────────────────────────────────────
+if command -v age-keygen &>/dev/null; then
+  echo "▶ age already installed — skipping"
+else
+  echo ""
+  echo "▶ Installing age..."
+  sudo apt-get update -qq
+  sudo apt-get install -y age >/dev/null
+  echo "  ✅ age installed"
+fi
+
 # ── ensure .kube dir exists ───────────────────────────────────────────────────
 mkdir -p ~/.kube
 

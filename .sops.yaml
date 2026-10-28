@@ -1,0 +1,4 @@
+creation_rules:
+  - path_regex: .*credentials.*\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age1m3u77qtn9qn03kurng2ujjhu0wqn4xyzs6l0w2g557t7magxke5sntw8h0                      # your age public key from earlier
