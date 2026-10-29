@@ -47,6 +47,7 @@ else
   # Envoy Gateway controller (idempotent — upgrade --install is safe on re-run)
   helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
     --version v1.5.4 \
+    --skip-crds \
     -n envoy-gateway-system --create-namespace
 
   kubectl wait --for=condition=Available deployment/envoy-gateway \
