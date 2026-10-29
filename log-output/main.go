@@ -89,7 +89,13 @@ func server(channel chan JSONResponse) {
 	fmt.Printf("Server started on port %s\n", port)
 	port = ":" + port
 
+	// Health‑check endpoint for GKE Ingress
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	http.HandleFunc("/log", func(w http.ResponseWriter, r *http.Request) {
 		data := <-channel
 		json.NewEncoder(w).Encode(data)
 	})

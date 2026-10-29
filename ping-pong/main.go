@@ -70,6 +70,12 @@ func server() {
 
 	var mutex sync.Mutex
 
+	// Health‑check endpoint for GKE Ingress
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	http.HandleFunc("/count", func(w http.ResponseWriter, r *http.Request) {
 		mutex.Lock()
 		c := count
@@ -77,7 +83,7 @@ func server() {
 		w.Write([]byte(strconv.Itoa(int(c))))
 	})
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/pingpong", func(w http.ResponseWriter, r *http.Request) {
 		mutex.Lock()
 		defer mutex.Unlock()
 		fmt.Fprintf(w, "pong %d", count)

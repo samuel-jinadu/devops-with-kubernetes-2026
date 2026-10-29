@@ -21,15 +21,21 @@ kubectl wait --for=condition=Ready nodes --all --timeout=180s
 # Namespaces
 kubectl apply -f manifests/namespaces
 
-# Secrets (decrypted from sops)
+# Secrets (decrypted with sops)
 sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
+sops --decrypt postgres/postgres-credentials-project.enc.yaml | kubectl apply -f -
 
-# Postgres StatefulSet + headless Service
+# Postgres
 kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
 kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
 
-# Ping-pong (init container waits for Postgres, but block here too)
-kubectl apply -f ping-pong/gke-manifests
+# Ping-pong
+kubectl apply -f ping-pong/manifests
 echo "▶ waiting for ping-pong…"
 kubectl -n exercises rollout status deployment/pingpong-dep --timeout=120s
+
+# Log‑output
+kubectl apply -f log-output/manifests
+echo "▶ waiting for log-output…"
+kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
