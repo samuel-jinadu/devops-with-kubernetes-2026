@@ -1,0 +1,24 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: todo-backend-route
+  namespace: project
+spec:
+  parentRefs:
+    - name: exercises-gateway
+      namespace: exercises
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /submit
+      backendRefs:
+        - name: todo-backend-service-cluster-ip
+          port: 2345
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /backend
+      backendRefs:
+        - name: todo-backend-service-cluster-ip
+          port: 2345

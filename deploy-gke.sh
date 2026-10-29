@@ -96,6 +96,16 @@ kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
 kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 
+kubectl apply -k todo-backend/manifests
+echo "▶ waiting for todo-backend…"
+kubectl -n project rollout status deployment/todo-backend-deployment --timeout=120s
+
+kubectl apply -k todo-app/manifests
+echo "▶ waiting for todo-app…"
+kubectl -n project rollout status deployment/todo-app-deployment --timeout=120s
+
+kubectl apply -f manifests/cronjobs
+
 # ─── 7b. GKE-only: point the LB health check at /healthz ──────────────────────
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
   echo "▶ Applying GKE HealthCheckPolicy…"
