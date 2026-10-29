@@ -30,7 +30,7 @@
 - [Exercise 3.4](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.4)
 
 ## Notes
-- Deploy: `kubectl apply -f manifests/deployment.yaml`
+- Deploy: `./deploy-gke.sh`
 - Extract config for lens: `kubectl config view --minify --raw`
 - Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
 - Create default cluster with published ports: `k3d cluster create --port 8082:30080@agent:0 -p 8081:80@loadbalancer --agents 2`
