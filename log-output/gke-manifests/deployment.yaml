@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hashgenerator-dep
+  namespace: exercises
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hashgenerator
+  template:
+    metadata:
+      labels:
+        app: hashgenerator
+    spec:
+      volumes:
+        - name: config-volume
+          configMap:
+            name: log-output-configmap
+      containers:
+        - name: hashgenerator
+          image: ghcr.io/samuel-jinadu/log-output:main
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config
+          envFrom:
+            - configMapRef:
+                name: log-output-configmap

@@ -1,0 +1,16 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: log-output-route
+  namespace: exercises
+spec:
+  parentRefs:
+    - name: exercises-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /log
+      backendRefs:
+        - name: hashgenerator-service-cluster-ip
+          port: 2345
