@@ -201,11 +201,13 @@ fi
 # ─── 10. Print URLs ───────────────────────────────────────────────────────────
 PINGPONG_URL="http://${GATEWAY_ADDRESS}/pingpong"
 LOG_URL="http://${GATEWAY_ADDRESS}/log"
+TODO_URL="http://${GATEWAY_ADDRESS}/"
 
 echo ""
 echo "✅ Gateway address: ${GATEWAY_ADDRESS}"
 echo "   Ping-pong:  ${PINGPONG_URL}"
 echo "   Log-output: ${LOG_URL}"
+echo "   Todo: ${TODO_URL}"
 echo ""
 echo "ℹ️  First request may return 5xx for 5–30s while backend health checks converge."
 if [ -n "${PORT_FORWARD_PID}" ]; then
