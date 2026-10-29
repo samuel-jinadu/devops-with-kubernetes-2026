@@ -186,6 +186,80 @@ else
   echo "  ✅ Helm $(helm version --short 2>/dev/null) installed"
 fi
 
+# ── floci-gcp (GCP emulator) ──────────────────────────────────────────────────
+echo ""
+echo "▶ Setting up floci-gcp (GCP emulator)..."
+
+# Start floci-gcp if not already running
+if docker ps --filter "name=floci-gcp" --format '{{.Names}}' | grep -q '^floci-gcp$'; then
+  echo "  floci-gcp already running — skipping start"
+else
+  docker rm -f floci-gcp 2>/dev/null || true
+  docker run -d --name floci-gcp \
+    -p 4588:4588 \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    floci/floci-gcp:latest >/dev/null
+  echo "  ✅ floci-gcp container started"
+
+  # Wait for the emulator API to answer before returning
+  echo "  ⏳ Waiting for floci-gcp to be ready..."
+  for i in $(seq 1 30); do
+    if curl -fsS http://localhost:4588/ >/dev/null 2>&1 || \
+       curl -fsS http://localhost:4588/container/v1/projects >/dev/null 2>&1; then
+      echo "  ✅ floci-gcp is up"
+      break
+    fi
+    sleep 1
+    if [ "$i" -eq 30 ]; then
+      echo "  ⚠️  floci-gcp did not respond within 30s — continuing anyway"
+    fi
+  done
+fi
+
+# Persist env vars for every future shell (idempotent)
+if ! grep -q "# ── floci-gcp env" ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc << 'BASHRC'
+
+# ── floci-gcp env ─────────────────────────────────────────────────────────────
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER="http://localhost:4588/container/"
+export CLOUDSDK_CORE_PROJECT="floci-local"
+export CLOUDSDK_AUTH_ACCESS_TOKEN="unused"
+BASHRC
+  echo "  ✅ floci-gcp env vars added to ~/.bashrc"
+fi
+
+# Export for the current script's environment too
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER="http://localhost:4588/container/"
+export CLOUDSDK_CORE_PROJECT="floci-local"
+export CLOUDSDK_AUTH_ACCESS_TOKEN="unused"
+
+echo "  ✅ floci-gcp ready — gcloud will target the emulator in this workspace"
+
+# ── Google Cloud SDK (gcloud) ────────────────────────────────────────────────
+if command -v gcloud &>/dev/null; then
+  echo "▶ gcloud CLI already installed ($(gcloud --version | head -1)) — skipping"
+else
+  echo ""
+  echo "▶ Installing Google Cloud SDK (gcloud)..."
+
+  # Install prerequisites
+  sudo apt-get update -qq
+  sudo apt-get install -y apt-transport-https ca-certificates gnupg curl >/dev/null
+
+  # Add the Google Cloud SDK repository
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
+    sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+    sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list >/dev/null
+
+  # Install gcloud CLI and the GKE auth plugin
+  sudo apt-get update -qq
+  sudo apt-get install -y google-cloud-cli google-cloud-sdk-gke-gcloud-auth-plugin >/dev/null
+
+  echo "  ✅ gcloud $(gcloud --version | head -1) installed"
+fi
+
 # ── ensure .kube dir exists ───────────────────────────────────────────────────
 mkdir -p ~/.kube
 
