@@ -53,6 +53,19 @@ else
   kubectl wait --for=condition=Available deployment/envoy-gateway \
     -n envoy-gateway-system --timeout=300s
 
+  # Envoy Gateway's Helm chart does NOT create the GatewayClass.
+  # Create it explicitly so exercises-gateway has something to bind to.
+  kubectl apply -f - <<'EOF'
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+EOF
+
+  kubectl wait --for=condition=Accepted gatewayclass/eg --timeout=120s
+
   GATEWAY_CLASS="eg"
 fi
 
@@ -83,12 +96,47 @@ kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
 kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 
-# ─── 8. Wait for the Gateway to be Programmed ─────────────────────────────────
+# ─── 8. Wait for the Gateway data plane ───────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"
 NAMESPACE="exercises"
-echo "▶ Waiting for Gateway to be Programmed..."
-kubectl wait --for=condition=Programmed gateway/"${GATEWAY_NAME}" \
-  -n "${NAMESPACE}" --timeout=600s
+
+if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
+  echo "▶ Waiting for Gateway to be Programmed (real GKE)..."
+  kubectl wait --for=condition=Programmed gateway/"${GATEWAY_NAME}" \
+    -n "${NAMESPACE}" --timeout=600s
+else
+  # Emulator: Envoy Gateway creates a Service/Deployment in envoy-gateway-system.
+  # We can't rely on `Programmed=True` because floci-gcp has no LoadBalancer
+  # implementation, so the Service's EXTERNAL-IP stays <pending> and the
+  # Gateway condition may never flip. Waiting on the data-plane objects is
+  # sufficient — we port-forward to the Service directly in step 9.
+  echo "▶ Waiting for Envoy data plane to appear (emulator)..."
+  ENVOY_SVC=""
+  ENVOY_DEPLOY=""
+  for i in $(seq 1 90); do
+    ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+      --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NAMESPACE},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    ENVOY_DEPLOY=$(kubectl get deploy -n envoy-gateway-system \
+      --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NAMESPACE},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [ -n "${ENVOY_SVC}" ] && [ -n "${ENVOY_DEPLOY}" ]; then
+      echo "  Found Envoy service=${ENVOY_SVC} deployment=${ENVOY_DEPLOY}"
+      kubectl -n envoy-gateway-system rollout status \
+        deploy/"${ENVOY_DEPLOY}" --timeout=120s
+      break
+    fi
+    sleep 2
+    if [ "$i" -eq 90 ]; then
+      echo "❌ Timed out waiting for Envoy data plane."
+      echo "   Hint: kubectl get svc,deploy -n envoy-gateway-system"
+      echo "         kubectl describe gateway ${GATEWAY_NAME} -n ${NAMESPACE}"
+      exit 1
+    fi
+  done
+fi
 
 # ─── 9. Resolve the Gateway address ───────────────────────────────────────────
 GATEWAY_ADDRESS=""
@@ -104,11 +152,12 @@ if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
     exit 1
   fi
 else
-  # Emulator: Envoy Gateway is behind a Service; port-forward for reliability
-  echo "▶ Emulator detected; locating Envoy Gateway service..."
-  ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
-    --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NAMESPACE},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
-    -o jsonpath='{.items[0].metadata.name}')
+  # Emulator: reuse the Envoy Service discovered in step 8.
+  if [ -z "${ENVOY_SVC:-}" ]; then
+    ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+      --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NAMESPACE},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
+      -o jsonpath='{.items[0].metadata.name}')
+  fi
 
   if [ -z "${ENVOY_SVC}" ]; then
     echo "❌ Could not find Envoy Gateway service for Gateway ${NAMESPACE}/${GATEWAY_NAME}."
@@ -117,7 +166,7 @@ else
   fi
   echo "  Found Envoy service: ${ENVOY_SVC}"
 
-  PORT_FORWARD_PORT=8080
+  PORT_FORWARD_PORT=8060
   echo "▶ Starting port-forward on localhost:${PORT_FORWARD_PORT} → svc/${ENVOY_SVC}:80..."
   kubectl -n envoy-gateway-system port-forward svc/"${ENVOY_SVC}" \
     ${PORT_FORWARD_PORT}:80 >/tmp/envoy-port-forward.log 2>&1 &
