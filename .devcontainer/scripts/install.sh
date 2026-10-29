@@ -222,8 +222,9 @@ if ! grep -q "# ── floci-gcp env" ~/.bashrc 2>/dev/null; then
 
 # ── floci-gcp env ─────────────────────────────────────────────────────────────
 export CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER="http://localhost:4588/container/"
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE="http://localhost:4588/"
 export CLOUDSDK_CORE_PROJECT="floci-local"
-export CLOUDSDK_AUTH_ACCESS_TOKEN="unused"
+export CLOUDSDK_AUTH_ACCESS_TOKEN="floci"
 BASHRC
   echo "  ✅ floci-gcp env vars added to ~/.bashrc"
 fi
@@ -246,18 +247,24 @@ else
   sudo apt-get update -qq
   sudo apt-get install -y apt-transport-https ca-certificates gnupg curl >/dev/null
 
-  # Add the Google Cloud SDK repository
+  # Add the Google Cloud SDK repository (cleanly, overwriting any duplicates)
   curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
     sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-
+  
+  # Use 'tee' to overwrite the file, preventing duplicate entries
   echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
-    sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list >/dev/null
+    sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list >/dev/null
 
-  # Install gcloud CLI and the GKE auth plugin
+  # Update and install gcloud CLI + the *correctly named* auth plugin
   sudo apt-get update -qq
-  sudo apt-get install -y google-cloud-cli google-cloud-sdk-gke-gcloud-auth-plugin >/dev/null
+  sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin >/dev/null
 
-  echo "  ✅ gcloud $(gcloud --version | head -1) installed"
+  if command -v gcloud &>/dev/null; then
+    echo "  ✅ gcloud $(gcloud --version | head -1) installed"
+  else
+    echo "  ❌ gcloud installation failed. Check the apt output above."
+    exit 1 # Fail the script so the user knows something is wrong
+  fi
 fi
 
 # ── ensure .kube dir exists ───────────────────────────────────────────────────
