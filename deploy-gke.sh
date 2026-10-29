@@ -96,6 +96,12 @@ kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
 kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 
+# ─── 7b. GKE-only: point the LB health check at /healthz ──────────────────────
+if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
+  echo "▶ Applying GKE HealthCheckPolicy…"
+  kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
+fi
+
 # ─── 8. Wait for the Gateway data plane ───────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"
 NAMESPACE="exercises"
