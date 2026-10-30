@@ -35,6 +35,12 @@
 - [Exercise 3.9](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.9)
 - [Exercise 3.10](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.10)
 - [Exercise 3.11](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.11)
+- [Exercise 3.12](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.12)
+
+# Logs Screenshot
+![Logs Screenshot](logs-screenshot.png)
+
+*Couldnt get access to the true GCP, so had to improvise: Log Screenshot*
 
 ## Pros and Cons of DBaaS vs DIY
 
