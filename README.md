@@ -30,9 +30,11 @@
 - [Exercise 3.4](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.4)
 - [Exercise 3.5](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.5)
 - [Exercise 3.6](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.6)
+- [Exercise 3.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.7)
 
 ## Notes
 - Deploy: `./deploy-gke.sh`
+- Compatibile with true GKE and floci-gcp GKE simulation
 - Extract config for lens: `kubectl config view --minify --raw`
 - Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
 - Sabotaging pods: `kubectl delete pod -l app=todo-app`
