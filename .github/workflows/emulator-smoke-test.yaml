@@ -16,13 +16,16 @@ concurrency:
 
 jobs:
   smoke:
-    # OPT-IN ONLY — runs only if you set ENABLE_EMULATOR_SMOKE_TEST=true
-    # AND publish succeeded AND SOPS key is available.
     if: |
       vars.ENABLE_EMULATOR_SMOKE_TEST == 'true' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER: http://localhost:4588/container/
+      CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE: http://localhost:4588/
+      CLOUDSDK_CORE_PROJECT: floci-local
+      CLOUDSDK_AUTH_ACCESS_TOKEN: floci
     steps:
       - uses: actions/checkout@v4
 
@@ -33,43 +36,53 @@ jobs:
             exit 1
           fi
 
-      - name: Install tools (kubectl, helm, gcloud, sops, age)
+      - name: Install tools
         run: |
-          # kubectl
           curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
           sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
-          # helm
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          # gcloud
           echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
           curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
           sudo apt-get update -qq && sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin
-          # sops
           VER=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
           curl -sL "https://github.com/getsops/sops/releases/download/${VER}/sops_${VER#v}_amd64.deb" -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
 
       - name: Start floci-gcp emulator
         run: |
+          docker rm -f floci-gcp 2>/dev/null || true
           docker run -d --name floci-gcp --restart unless-stopped \
             -p 4588:4588 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             floci/floci-gcp:latest
+          # Wait for the emulator's own readiness log line (proven to appear ~1s after start)
           for i in $(seq 1 60); do
-            if curl -fsS http://localhost:4588/ >/dev/null 2>&1 \
-            || curl -fsS http://localhost:4588/container/v1/projects >/dev/null 2>&1; then
-              echo "emulator up"; exit 0
+            if docker logs floci-gcp 2>&1 | grep -q "floci-gcp Ready"; then
+              echo "emulator process ready"
+              sleep 3   # give REST/gRPC routes a moment to bind
+              exit 0
             fi
             sleep 2
           done
-          echo "::error::emulator failed to start"; docker logs floci-gcp; exit 1
+          echo "::error::emulator failed to reach Ready state"
+          docker logs floci-gcp
+          exit 1
+
+      - name: Wait for emulator Container API (what deploy actually needs)
+        run: |
+          for i in $(seq 1 30); do
+            if gcloud container clusters list --zone=europe-north1-b >/dev/null 2>&1; then
+              echo "emulator Container API ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::emulator Container API not responding"
+          docker logs floci-gcp --tail 100
+          exit 1
 
       - name: Run deploy-gke.sh against emulator
         env:
-          CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER: http://localhost:4588/container/
-          CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE: http://localhost:4588/
-          CLOUDSDK_CORE_PROJECT: floci-local
-          CLOUDSDK_AUTH_ACCESS_TOKEN: floci
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           chmod +x deploy-gke.sh
@@ -81,28 +94,28 @@ jobs:
           fail=0
           check() { curl -fsS --max-time 10 "$2" | grep -q -- "$3" || { echo "::error::$1 failed"; fail=1; }; }
 
-          # wait for gateway convergence
           for i in $(seq 1 30); do
             curl -fsS "${BASE}/pingpong" >/dev/null 2>&1 && break
             sleep 2
           done
 
-          check "pingpong" "${BASE}/pingpong" "pong"
-          check "log-output" "${BASE}/log" "hello world"
-          check "todo-app"  "${BASE}/"     "Todo App"
+          check "pingpong"   "${BASE}/pingpong" "pong"
+          check "log-output" "${BASE}/log"      "hello world"
+          check "todo-app"   "${BASE}/"         "Todo App"
 
-          # todo round-trip
           TODO="ci-$(date +%s)"
           curl -fsS -X POST --data-urlencode "todo=${TODO}" "${BASE}/submit" >/dev/null
           curl -fsS "${BASE}/backend" | grep -q "$TODO" || { echo "::error::todo round-trip failed"; fail=1; }
 
           exit $fail
 
-      - name: Dump logs on failure
+      - name: Dump diagnostics on failure
         if: failure()
         run: |
-          kubectl get pods -A || true
-          kubectl -n exercises describe pods || true
-          kubectl -n project describe pods || true
-          cat /tmp/envoy-port-forward.log || true
           docker logs floci-gcp --tail 200 || true
+          cat /tmp/envoy-port-forward.log || true
+          if [ -f "$HOME/.kube/config" ]; then
+            kubectl get pods -A || true
+            kubectl -n exercises describe pods || true
+            kubectl -n project describe pods || true
+          fi
