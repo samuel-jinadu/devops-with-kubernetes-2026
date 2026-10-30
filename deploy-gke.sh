@@ -114,6 +114,11 @@ kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 # ─── 8. Project app → TARGET_NS with TARGET_TAG and per-branch URL prefixes ───
 APP_TMP=$(mktemp -d)
 
+# Copy manifests INTO the temp dir so all resources are relative to it
+# (kustomize refuses absolute paths in `resources:`)
+cp -r todo-backend/manifests "$APP_TMP/todo-backend-manifests"
+cp -r todo-app/manifests     "$APP_TMP/todo-app-manifests"
+
 {
   cat <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -125,8 +130,8 @@ images:
   - name: ghcr.io/samuel-jinadu/todo-app
     newTag: ${TARGET_TAG}
 resources:
-  - $(pwd)/todo-backend/manifests
-  - $(pwd)/todo-app/manifests
+  - ./todo-backend-manifests
+  - ./todo-app-manifests
 EOF
 
   # Branch-only patches: prefix HTTPRoute paths with /<ns>/ and rewrite
