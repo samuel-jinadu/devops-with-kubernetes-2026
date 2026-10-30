@@ -1,0 +1,88 @@
+name: Delete branch environment
+
+on:
+  delete:              # fires for branch AND tag deletions
+
+permissions:
+  contents: read
+  id-token: write      # required for Workload Identity Federation
+
+concurrency:
+  group: delete-env-${{ github.event.ref }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    # Only branch deletions; skip main (it uses "project", not a per-branch ns);
+    # respect the same kill-switch as deploy-gke.
+    if: |
+      github.event.ref_type == 'branch' &&
+      github.event.ref != 'main' &&
+      vars.DISABLE_GKE_DEPLOY != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # ── Guard: is the deleted branch name a valid, non-reserved namespace? ──
+      - name: Validate target namespace
+        id: validate
+        run: |
+          REF="${{ github.event.ref }}"
+          if ! [[ "$REF" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "::notice::Branch '$REF' is not a valid namespace name; nothing to clean up."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$REF" in
+            project|exercises|default|kube-system|kube-public|kube-node-lease|envoy-gateway-system|monitoring)
+              echo "::warning::Refusing to delete reserved namespace '$REF'"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "ns=$REF" >> "$GITHUB_OUTPUT"
+
+      # ── Guard: skip green if no GCP creds (same gate as deploy-gke) ──
+      - name: Check GCP credentials
+        id: gcp
+        if: steps.validate.outputs.skip == 'false'
+        run: |
+          if [ -z "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ] || \
+             [ -z "${{ secrets.GCP_SERVICE_ACCOUNT }}" ]; then
+            echo "::notice::No GCP credentials configured — cleanup skipped."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # No actions/checkout — we don't need the repo, and the deleted branch
+      # can't be checked out anyway. Saves a step and a failure mode.
+
+      - name: Authenticate to Google Cloud
+        if: steps.validate.outputs.skip == 'false' && steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account:           ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.validate.outputs.skip == 'false' && steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        if: steps.validate.outputs.skip == 'false' && steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: dwk-cluster
+          location:     europe-north1-b
+
+      - name: Delete namespace
+        if: steps.validate.outputs.skip == 'false' && steps.gcp.outputs.skip == 'false'
+        run: |
+          NS="${{ steps.validate.outputs.ns }}"
+          echo "▶ Deleting namespace '$NS' (branch '${{ github.event.ref }}' was deleted)"
+          if ! kubectl get namespace "$NS" >/dev/null 2>&1; then
+            echo "::notice::Namespace '$NS' does not exist; nothing to clean up."
+            exit 0
+          fi
+          kubectl delete namespace "$NS" --wait=false --ignore-not-found
+          echo "✅ Deletion of namespace '$NS' requested"

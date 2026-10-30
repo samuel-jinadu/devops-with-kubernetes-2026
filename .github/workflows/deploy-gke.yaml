@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: deploy-gke-${{ github.event.workflow_run.head_branch || 'default' }}
