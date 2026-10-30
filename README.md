@@ -33,6 +33,7 @@
 - [Exercise 3.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.7)
 - [Exercise 3.8](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.8)
 - [Exercise 3.9](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.9)
+- [Exercise 3.10](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.10)
 
 ## Pros and Cons of DBaaS vs DIY
 

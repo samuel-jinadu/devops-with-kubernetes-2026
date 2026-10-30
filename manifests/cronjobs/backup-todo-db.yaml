@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-todo-db-cronjob
+  namespace: project
+spec:
+  schedule: "0 3 * * *"   # daily at 03:00 UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: gcr.io/google.com/cloudsdktool/cloud-sdk:alpine
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  apk add --no-cache postgresql-client >/dev/null
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  FILE="/tmp/todos-${TS}.sql"
+                  echo "▶ pg_dump → ${FILE}"
+                  pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$FILE"
+                  echo "▶ gsutil cp → gs://${BACKUP_BUCKET}/todos-${TS}.sql"
+                  gsutil cp "$FILE" "gs://${BACKUP_BUCKET}/todos-${TS}.sql"
+                  echo "✅ backup complete"
+              env:
+                - name: POSTGRES_HOST
+                  value: postgres-svc.exercises.svc.cluster.local
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: username
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: password
+                - name: POSTGRES_DB
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: dbname
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: postgres-credentials
+                      key: password
+                - name: GOOGLE_APPLICATION_CREDENTIALS
+                  value: /etc/gcp/key.json
+                - name: BACKUP_BUCKET
+                  value: BACKUP_BUCKET_PLACEHOLDER
+                # STORAGE_EMULATOR_HOST_BLOCK_START
+                - name: STORAGE_EMULATOR_HOST
+                  value: "STORAGE_EMULATOR_HOST_PLACEHOLDER"
+                # STORAGE_EMULATOR_HOST_BLOCK_END
+              volumeMounts:
+                - name: gcp-key
+                  mountPath: /etc/gcp
+                  readOnly: true
+          volumes:
+            - name: gcp-key
+              secret:
+                secretName: storage-sa-key

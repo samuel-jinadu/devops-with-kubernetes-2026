@@ -6,6 +6,13 @@ set -euo pipefail
 # TARGET_TAG: image tag for todo-backend/todo-app (defaults to "main")
 TARGET_NS="${TARGET_NS:-project}"
 TARGET_TAG="${TARGET_TAG:-main}"
+BACKUP_BUCKET="${BACKUP_BUCKET:-todo-backups-$(gcloud config get-value project 2>/dev/null || echo dwk)}"
+
+# Optional override for the emulator GCS endpoint.
+# If unset, deploy-gke.sh auto-detects (host.docker.internal → floci-gcp IP → 172.17.0.1).
+# If auto-detection is wrong for your setup, set this to something like:
+#   STORAGE_EMULATOR_HOST=http://192.168.1.42:4588
+STORAGE_EMULATOR_HOST="${STORAGE_EMULATOR_HOST:-}"
 
 # Guardrails — reject obvious mistakes early
 if ! [[ "$TARGET_NS" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
@@ -20,6 +27,39 @@ case "$TARGET_NS" in
 esac
 
 echo "▶ Target namespace: $TARGET_NS (image tag: $TARGET_TAG)"
+
+# ─── Helper: best-effort detection of the emulator's reachable address ────────
+# Used only when GATEWAY_CLASS == "eg" (emulator mode).
+detect_emulator_host() {
+  # 1. Explicit override wins.
+  if [ -n "${STORAGE_EMULATOR_HOST}" ]; then
+    local h="${STORAGE_EMULATOR_HOST#http://}"
+    h="${h#https://}"
+    h="${h%%:*}"
+    echo "$h"
+    return
+  fi
+
+  # 2. host.docker.internal (works when Docker sets it up — Docker Desktop, or
+  #    containers started with --add-host=host.docker.internal:host-gateway).
+  if getent hosts host.docker.internal >/dev/null 2>&1; then
+    echo "host.docker.internal"
+    return
+  fi
+
+  # 3. floci-gcp container's IP on its Docker network.
+  local ip
+  ip=$(docker inspect \
+        -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}} {{end}}{{end}}' \
+        floci-gcp 2>/dev/null | awk '{print $1}')
+  if [ -n "$ip" ]; then
+    echo "$ip"
+    return
+  fi
+
+  # 4. Default Docker bridge gateway.
+  echo "172.17.0.1"
+}
 
 # ─── 1. Cluster ───────────────────────────────────────────────────────────────
 if ! gcloud container clusters describe dwk-cluster --zone=europe-north1-b >/dev/null 2>&1; then
@@ -50,8 +90,7 @@ done
 kubectl wait --for=condition=Ready nodes --all --timeout=180s
 
 # ─── 2. Namespaces ────────────────────────────────────────────────────────────
-kubectl apply -f manifests/namespaces   # creates exercises + project
-# Create the branch namespace if deploying somewhere other than project
+kubectl apply -f manifests/namespaces
 kubectl create namespace "$TARGET_NS" --dry-run=client -o yaml | kubectl apply -f -
 
 # ─── 3. Decide which GatewayClass to use (real GKE vs emulator) ───────────────
@@ -97,6 +136,46 @@ sops --decrypt postgres/postgres-credentials-project.enc.yaml \
   | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
   | kubectl apply -f -
 
+# ─── 5b. Storage SA secret + GCS bucket (project namespace only) ──────────────
+if [ "$TARGET_NS" = "project" ]; then
+  if [ -f key.json ]; then
+    echo "▶ Creating storage-sa-key secret from key.json"
+    kubectl create secret generic storage-sa-key \
+      --from-file=key.json=key.json \
+      --namespace=project \
+      --dry-run=client -o yaml | kubectl apply -f -
+  elif ! kubectl -n project get secret storage-sa-key >/dev/null 2>&1; then
+    echo "⚠️  WARNING: 'storage-sa-key' secret is missing in project namespace."
+    echo "    The backup CronJob will fail until you create it manually with:"
+    echo "    kubectl create secret generic storage-sa-key --from-file=key.json=key.json -n project"
+  fi
+
+  if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
+    # ── Real GKE: create bucket via gsutil (idempotent) ──
+    if ! gsutil ls -b "gs://${BACKUP_BUCKET}" >/dev/null 2>&1; then
+      echo "▶ Creating GCS bucket gs://${BACKUP_BUCKET}"
+      gsutil mb -l europe-north1 "gs://${BACKUP_BUCKET}"
+    fi
+  else
+    # ── Emulator: create bucket via the GCS JSON API ──
+    # We use curl instead of gsutil here because gsutil tries to load credentials
+    # that the emulator doesn't validate; a direct API call is simpler and more
+    # reliable. The emulator serves GCS on the same port (4588) as everything else.
+    if curl -fsS "http://localhost:4588/storage/v1/b/${BACKUP_BUCKET}" >/dev/null 2>&1; then
+      echo "▶ Emulator bucket gs://${BACKUP_BUCKET} already exists"
+    else
+      echo "▶ Creating emulator bucket gs://${BACKUP_BUCKET}"
+      if curl -fsS -X POST "http://localhost:4588/storage/v1/b?project=floci-local" \
+           -H "Content-Type: application/json" \
+           -d "{\"name\": \"${BACKUP_BUCKET}\"}" >/dev/null 2>&1; then
+        echo "  ✅ Bucket created in emulator"
+      else
+        echo "  ⚠️  Could not create bucket in emulator; CronJob may fail on upload"
+      fi
+    fi
+  fi
+fi
+
 # ─── 6. Postgres (shared, always in exercises) ────────────────────────────────
 kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
@@ -114,8 +193,6 @@ kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 # ─── 8. Project app → TARGET_NS with TARGET_TAG and per-branch URL prefixes ───
 APP_TMP=$(mktemp -d)
 
-# Copy manifests INTO the temp dir so all resources are relative to it
-# (kustomize refuses absolute paths in `resources:`)
 cp -r todo-backend/manifests "$APP_TMP/todo-backend-manifests"
 cp -r todo-app/manifests     "$APP_TMP/todo-app-manifests"
 
@@ -134,8 +211,6 @@ resources:
   - ./todo-app-manifests
 EOF
 
-  # Branch-only patches: prefix HTTPRoute paths with /<ns>/ and rewrite
-  # internally so the Go handlers stay unchanged. Main keeps the root paths.
   if [ "$TARGET_NS" != "project" ]; then
     cat <<EOF
 patches:
@@ -204,14 +279,40 @@ kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --time
 echo "▶ waiting for todo-app in $TARGET_NS…"
 kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
 
-# ─── 9. CronJob → TARGET_NS ───────────────────────────────────────────────────
+# ─── 9. CronJobs ──────────────────────────────────────────────────────────────
+# gen-todo: per-branch
 sed "s|namespace: project|namespace: ${TARGET_NS}|" \
   manifests/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
+
+# backup: project only
+if [ "$TARGET_NS" = "project" ]; then
+  if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
+    # ── Real GKE: strip the emulator block, apply as-is ──
+    sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
+        -e '/STORAGE_EMULATOR_HOST_BLOCK_START/,/STORAGE_EMULATOR_HOST_BLOCK_END/d' \
+        manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
+  else
+    # ── Emulator: substitute the host ──
+    EMULATOR_HOST=$(detect_emulator_host)
+    if [ -n "$EMULATOR_HOST" ]; then
+      echo "▶ Emulator detected: STORAGE_EMULATOR_HOST=http://${EMULATOR_HOST}:4588"
+      sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
+          -e "s|STORAGE_EMULATOR_HOST_PLACEHOLDER|http://${EMULATOR_HOST}:4588|" \
+          manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
+    else
+      echo "⚠️  Could not detect emulator host; deploying without emulator-GCS support"
+      sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
+          -e '/STORAGE_EMULATOR_HOST_BLOCK_START/,/STORAGE_EMULATOR_HOST_BLOCK_END/d' \
+          manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
+    fi
+  fi
+fi
 
 # ─── 10. GKE-only: health check for ping-pong LB ──────────────────────────────
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
   echo "▶ Applying GKE HealthCheckPolicy…"
-  kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
+  kubectl apply -f gke-manifests/pingponghealthcheckpolicy.yaml 2>/dev/null \
+    || kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
 fi
 
 # ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
@@ -298,7 +399,6 @@ else
 fi
 
 # ─── 13. Print URLs ───────────────────────────────────────────────────────────
-# For branch deployments, all app URLs get the /<ns>/ prefix (see step 8 patches)
 if [ "$TARGET_NS" = "project" ]; then
   APP_PREFIX=""
 else

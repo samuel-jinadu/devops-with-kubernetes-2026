@@ -20,7 +20,7 @@ jobs:
       vars.ENABLE_EMULATOR_SMOKE_TEST == 'true' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER: http://localhost:4588/container/
       CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE: http://localhost:4588/
@@ -43,7 +43,7 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
           curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-          sudo apt-get update -qq && sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin
+          sudo apt-get update -qq && sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin openssl
           VER=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
           curl -sL "https://github.com/getsops/sops/releases/download/${VER}/sops_${VER#v}_amd64.deb" -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
@@ -55,7 +55,6 @@ jobs:
             -p 4588:4588 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             floci/floci-gcp:latest
-          # Wait for the emulator's own readiness log line (proven to appear ~1s after start)
           for i in $(seq 1 60); do
             if docker logs floci-gcp 2>&1 | grep -q "floci-gcp Ready"; then
               echo "emulator process ready"
@@ -68,7 +67,7 @@ jobs:
           docker logs floci-gcp
           exit 1
 
-      - name: Wait for emulator Container API (what deploy actually needs)
+      - name: Wait for emulator Container API
         run: |
           for i in $(seq 1 30); do
             if gcloud container clusters list --zone=europe-north1-b >/dev/null 2>&1; then
@@ -81,12 +80,84 @@ jobs:
           docker logs floci-gcp --tail 100
           exit 1
 
+      # ── NEW: fabricate a syntactically-valid key.json (emulator ignores credentials) ──
+      # We deliberately don't use `gcloud iam service-accounts keys create` here because
+      # the emulator's IAM key generation isn't guaranteed to produce PKCS#8 PEM that
+      # gsutil's parser accepts. A locally generated RSA key is guaranteed parseable,
+      # and the emulator (IAM mode=DISABLED) accepts any credentials.
+      # This file lives only on the runner for the duration of this job — it's not a
+      # real key and it's not committed or stored anywhere.
+      - name: Fabricate valid-structure key.json for emulator
+        run: |
+          PRIV=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null \
+                 | sed ':a;N;$!ba;s/\n/\\n/g')
+          cat > key.json <<EOF
+          {
+            "type": "service_account",
+            "project_id": "floci-local",
+            "private_key_id": "stub-for-emulator-only",
+            "private_key": "${PRIV}",
+            "client_email": "my-storage-sa@floci-local.iam.gserviceaccount.com",
+            "client_id": "stub",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"
+          }
+          EOF
+          python3 -c "import json; json.load(open('key.json'))"   # validate JSON parses
+          echo "wrote key.json ($(wc -c < key.json) bytes)"
+
       - name: Run deploy-gke.sh against emulator
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           chmod +x deploy-gke.sh
           ./deploy-gke.sh
+
+      # ── NEW: trigger the backup CronJob and assert the upload landed in the emulator ──
+      - name: Trigger backup CronJob and verify upload
+        run: |
+          JOB="backup-test-${GITHUB_RUN_ID}"
+          kubectl -n project create job \
+            --from=cronjob/backup-todo-db-cronjob "${JOB}"
+
+          # 5-minute budget for pod scheduling + image pull + apk + pg_dump + upload
+          for i in $(seq 1 100); do
+            complete=$(kubectl -n project get job "${JOB}" \
+                        -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
+            failed=$(kubectl -n project get job "${JOB}" \
+                        -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
+            if [ "$complete" = "True" ]; then
+              echo "✅ backup job completed"
+              break
+            fi
+            if [ "$failed" = "True" ]; then
+              echo "::error::backup job failed"
+              kubectl -n project logs -l job-name="${JOB}" --tail=200 || true
+              exit 1
+            fi
+            sleep 3
+            if [ "$i" -eq 100 ]; then
+              echo "::error::backup job timed out"
+              kubectl -n project describe job "${JOB}" || true
+              kubectl -n project logs -l job-name="${JOB}" --tail=200 || true
+              exit 1
+            fi
+          done
+
+          # Read the bucket name out of the CronJob spec (avoids hardcoding)
+          BUCKET=$(kubectl -n project get cronjob backup-todo-db-cronjob \
+                     -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].env[?(@.name=="BACKUP_BUCKET")].value}')
+          echo "▶ checking emulator bucket gs://${BUCKET}"
+
+          COUNT=$(curl -fsS "http://localhost:4588/storage/v1/b/${BUCKET}/o" \
+                    | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("items",[])))')
+          if [ "${COUNT}" -lt 1 ]; then
+            echo "::error::backup file not found in emulator bucket gs://${BUCKET}"
+            echo "  listed objects: ${COUNT}"
+            exit 1
+          fi
+          echo "✅ ${COUNT} object(s) present in gs://${BUCKET}"
 
       - name: Assert endpoints
         run: |
@@ -118,4 +189,5 @@ jobs:
             kubectl get pods -A || true
             kubectl -n exercises describe pods || true
             kubectl -n project describe pods || true
+            kubectl -n project logs -l job-name --tail=50 --prefix || true
           fi

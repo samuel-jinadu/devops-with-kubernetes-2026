@@ -3,3 +3,4 @@ pack-proj.sh
 project_snapshot.txt
 postgres-credentials.yaml
 postgres-credentials-project.yaml
+key.json
