@@ -28,8 +28,20 @@ spec:
                   FILE="/tmp/todos-${TS}.sql"
                   echo "▶ pg_dump → ${FILE}"
                   pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$FILE"
-                  echo "▶ gsutil cp → gs://${BACKUP_BUCKET}/todos-${TS}.sql"
-                  gsutil cp "$FILE" "gs://${BACKUP_BUCKET}/todos-${TS}.sql"
+
+                  if [ -n "$STORAGE_EMULATOR_HOST" ]; then
+                    # ── Emulator: upload via GCS JSON API with curl (no auth, no gsutil)
+                    echo "▶ curl upload → ${STORAGE_EMULATOR_HOST}/upload/storage/v1/b/${BACKUP_BUCKET}/o"
+                    curl -fsS -X POST \
+                      "${STORAGE_EMULATOR_HOST}/upload/storage/v1/b/${BACKUP_BUCKET}/o?uploadType=media&name=todos-${TS}.sql" \
+                      -H "Content-Type: application/octet-stream" \
+                      --data-binary "@${FILE}" >/dev/null
+                  else
+                    # ── Real GKE: gsutil to real GCS with the mounted SA key
+                    echo "▶ gsutil cp → gs://${BACKUP_BUCKET}/todos-${TS}.sql"
+                    gsutil cp "$FILE" "gs://${BACKUP_BUCKET}/todos-${TS}.sql"
+                  fi
+
                   echo "✅ backup complete"
               env:
                 - name: POSTGRES_HOST
