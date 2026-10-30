@@ -32,6 +32,27 @@
 - [Exercise 3.6](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.6)
 - [Exercise 3.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.7)
 - [Exercise 3.8](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.8)
+- [Exercise 3.9](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.9)
+
+## Pros and Cons of DBaaS vs DIY
+
+### DIY Postgres (self-hosted on GKE with PVCs)
+
+**Pros**
+- **Costs to initialize**: No additional service fees beyond the GKE cluster you already pay for; you only pay for the PersistentVolume storage (and compute you already provision). 
+
+**Cons**
+- **Work to initialize**: You must write and maintain the Deployment/StatefulSet, PVC, Service, Secret for credentials, and a backup CronJob.
+- **Maintenance burden**: You are responsible for version upgrades, security patching, minor/major Postgres upgrades (which are nontrivial with PVCs), and monitoring disk usage. 
+
+### DBaaS (Google Cloud SQL for Postgres)
+
+**Pros**
+- **Work to initialize**: Very little: No YAML for storage, no StatefulSet.
+- **Maintenance**: Google handles patching, minor version upgrades, disk growth, and instance health. 
+
+**Cons**
+- **Costs** — You pay for the instance (vCPU/RAM), storage, and backups on top of the GKE cluster. 
 
 ## Notes
 - Deploy: `./deploy-gke.sh`
