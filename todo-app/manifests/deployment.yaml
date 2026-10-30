@@ -25,6 +25,13 @@ spec:
           volumeMounts:
             - name: pingpong-data
               mountPath: /files
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
           envFrom:
             - configMapRef:
                 name: todo-app-configmap
