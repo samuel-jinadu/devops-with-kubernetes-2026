@@ -4,24 +4,47 @@ on:
   workflow_run:
     workflows: ["Publish image to GHCR"]
     types: [completed]
-    branches: [main]
+    # NOTE: no `branches:` filter — deploy every branch.
+    # Tag pushes also trigger (head_branch will be empty; mapped to project/:main).
 
 permissions:
   contents: read
 
 concurrency:
-  group: deploy-gke-${{ github.ref }}
+  group: deploy-gke-${{ github.event.workflow_run.head_branch || 'default' }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    # GATE 1 — repo variable (unset = run) — combined with publish-success check
+    # GATE 1 — repo variable (unset = run) + publish success
     if: |
       vars.DISABLE_GKE_DEPLOY != 'true' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      # GATE 2 — skip body but keep green if no GCP creds
+      # Compute deployment target from the branch/tag that triggered publish
+      - name: Compute deployment target
+        id: target
+        run: |
+          REF="${{ github.event.workflow_run.head_branch }}"
+          if [ -z "$REF" ] || [ "$REF" = "main" ]; then
+            # Empty (tag push) or main → project namespace, :main image
+            NS="project"
+            TAG="main"
+          elif [[ "$REF" =~ ^v[0-9] ]]; then
+            # Semver-ish tag → deploy tagged image into project (release-style)
+            NS="project"
+            TAG="$REF"
+          else
+            # Branch → its own namespace, tag = branch name
+            NS="$REF"
+            TAG="$REF"
+          fi
+          echo "ns=$NS"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "::notice::Deploying to ns=$NS with tag=$TAG"
+
+      # GATE 2 — skip body but stay green if no GCP creds
       - name: Check GCP credentials
         id: gcp
         run: |
@@ -65,27 +88,8 @@ jobs:
         if: steps.gcp.outputs.skip == 'false'
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          TARGET_NS:    ${{ steps.target.outputs.ns }}
+          TARGET_TAG:   ${{ steps.target.outputs.tag }}
         run: |
-          sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
-          sops --decrypt postgres/postgres-credentials-project.enc.yaml | kubectl apply -f -
-
-          kubectl apply -f manifests/namespaces
-          kubectl apply -f gke-manifests/gateway.yaml
-
-          kubectl apply -f postgres/postgres.yaml
-          kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
-
-          kubectl apply -f ping-pong/gke-manifests
-          kubectl -n exercises rollout status deployment/pingpong-dep --timeout=120s
-
-          kubectl apply -f log-output/gke-manifests
-          kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
-
-          kubectl apply -k todo-backend/manifests
-          kubectl -n project rollout status deployment/todo-backend-deployment --timeout=120s
-
-          kubectl apply -k todo-app/manifests
-          kubectl -n project rollout status deployment/todo-app-deployment --timeout=120s
-
-          kubectl apply -f manifests/cronjobs
-          kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
+          chmod +x deploy-gke.sh
+          ./deploy-gke.sh

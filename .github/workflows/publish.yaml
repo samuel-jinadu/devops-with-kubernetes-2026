@@ -2,8 +2,8 @@ name: Publish image to GHCR
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches: ["**"]   # all branches
+    tags: ["v*"]       # and version tags
 
 permissions:
   contents: read
