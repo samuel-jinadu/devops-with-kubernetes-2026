@@ -117,11 +117,22 @@ jobs:
       # ── NEW: trigger the backup CronJob and assert the upload landed in the emulator ──
       - name: Trigger backup CronJob and verify upload
         run: |
+          # ── Dump the CronJob that was ACTUALLY applied ───────────────────────
+          echo "═══ CronJob as applied by deploy-gke.sh ═══"
+          kubectl -n project get cronjob backup-todo-db-cronjob -o yaml || true
+          echo "═════════════════════════════════════════"
+
+          # ── Confirm the referenced secret exists ────────────────────────────
+          echo "▶ checking secret storage-sa-key"
+          kubectl -n project get secret storage-sa-key || {
+            echo "::error::secret storage-sa-key is missing — the CronJob pod will never start"
+            exit 1
+          }
+
           JOB="backup-test-${GITHUB_RUN_ID}"
           kubectl -n project create job \
             --from=cronjob/backup-todo-db-cronjob "${JOB}"
 
-          # 5-minute budget for pod scheduling + image pull + apk + pg_dump + upload
           for i in $(seq 1 100); do
             complete=$(kubectl -n project get job "${JOB}" \
                         -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
@@ -133,19 +144,29 @@ jobs:
             fi
             if [ "$failed" = "True" ]; then
               echo "::error::backup job failed"
-              kubectl -n project logs -l job-name="${JOB}" --tail=200 || true
+              echo "── job describe ──"
+              kubectl -n project describe job "${JOB}" || true
+              echo "── pods with job-name label ──"
+              kubectl -n project get pods -l job-name="${JOB}" -o wide || true
+              echo "── pod describe ──"
+              kubectl -n project describe pods -l job-name="${JOB}" || true
+              echo "── logs ──"
+              kubectl -n project logs -l job-name="${JOB}" --all-containers --tail=200 || true
+              echo "── recent events ──"
+              kubectl -n project get events --sort-by=.lastTimestamp | tail -40 || true
               exit 1
             fi
             sleep 3
             if [ "$i" -eq 100 ]; then
               echo "::error::backup job timed out"
               kubectl -n project describe job "${JOB}" || true
-              kubectl -n project logs -l job-name="${JOB}" --tail=200 || true
+              kubectl -n project get pods -l job-name="${JOB}" -o wide || true
+              kubectl -n project logs -l job-name="${JOB}" --all-containers --tail=200 || true
+              kubectl -n project get events --sort-by=.lastTimestamp | tail -40 || true
               exit 1
             fi
           done
 
-          # Read the bucket name out of the CronJob spec (avoids hardcoding)
           BUCKET=$(kubectl -n project get cronjob backup-todo-db-cronjob \
                      -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].env[?(@.name=="BACKUP_BUCKET")].value}')
           echo "▶ checking emulator bucket gs://${BUCKET}"
