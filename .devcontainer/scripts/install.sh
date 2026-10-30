@@ -1,18 +1,9 @@
 #!/bin/bash
 
 echo "================================================"
-echo "  Installing K3d Kubernetes Learning Environment"
+echo "  Installing GKE Emulator Kubernetes Learning Environment"
 echo "================================================"
 
-# ── k3d ──────────────────────────────────────────────────────────────────────
-if command -v k3d &>/dev/null; then
-  echo "▶ k3d already installed ($(k3d version | head -1 | awk '{print $3}')) — skipping"
-else
-  echo ""
-  echo "▶ Installing k3d..."
-  curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-  echo "  ✅ k3d $(k3d version | head -1 | awk '{print $3}') installed"
-fi
 
 # ── kubectx + kubens ─────────────────────────────────────────────────────────
 if command -v kubectx &>/dev/null; then
@@ -190,18 +181,17 @@ fi
 echo ""
 echo "▶ Setting up floci-gcp (GCP emulator)..."
 
-# Start floci-gcp if not already running
 if docker ps --filter "name=floci-gcp" --format '{{.Names}}' | grep -q '^floci-gcp$'; then
   echo "  floci-gcp already running — skipping start"
 else
   docker rm -f floci-gcp 2>/dev/null || true
   docker run -d --name floci-gcp \
+    --restart unless-stopped \
     -p 4588:4588 \
     -v /var/run/docker.sock:/var/run/docker.sock \
     floci/floci-gcp:latest >/dev/null
   echo "  ✅ floci-gcp container started"
 
-  # Wait for the emulator API to answer before returning
   echo "  ⏳ Waiting for floci-gcp to be ready..."
   for i in $(seq 1 30); do
     if curl -fsS http://localhost:4588/ >/dev/null 2>&1 || \
@@ -229,8 +219,8 @@ BASHRC
   echo "  ✅ floci-gcp env vars added to ~/.bashrc"
 fi
 
-# Export for the current script's environment too
 export CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER="http://localhost:4588/container/"
+export CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE="http://localhost:4588/"
 export CLOUDSDK_CORE_PROJECT="floci-local"
 export CLOUDSDK_AUTH_ACCESS_TOKEN="unused"
 

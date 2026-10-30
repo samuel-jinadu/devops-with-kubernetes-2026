@@ -1,5 +1,5 @@
 {
-  "name": "K3d Kubernetes Learning Environment",
+  "name": "GKE Emulator Kubernetes Learning Environment",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
 
   "features": {
@@ -15,14 +15,13 @@
   },
 
   "postCreateCommand": "bash .devcontainer/scripts/install.sh && echo '✅ postCreateCommand done'",
-  "postStartCommand": "bash .devcontainer/scripts/start-cluster.sh && echo '✅ postStartCommand done'",
-  "postAttachCommand": "k3d kubeconfig merge k8s-lab --kubeconfig-switch-context 2>/dev/null || true && echo '✅ kubeconfig ready'",
+  "postStartCommand": "bash .devcontainer/scripts/start-emulator.sh && echo '✅ postStartCommand done'",
+  "postAttachCommand": "echo '✅ Ready — run ./deploy-gke.sh to create the emulated GKE cluster'",
 
-  "forwardPorts": [8080, 8081, 8443, 9090, 3000],
+  "forwardPorts": [4588, 8060, 9090, 3000],
   "portsAttributes": {
-    "8080": { "label": "App / Ingress HTTP", "onAutoForward": "notify" },
-    "8081": { "label": "App Port 2", "onAutoForward": "silent" },
-    "8443": { "label": "App / Ingress HTTPS", "onAutoForward": "silent" },
+    "4588": { "label": "floci-gcp emulator API", "onAutoForward": "silent" },
+    "8060": { "label": "Gateway (Envoy port-forward)", "onAutoForward": "notify" },
     "9090": { "label": "Prometheus", "onAutoForward": "silent" },
     "3000": { "label": "Grafana / Dashboard", "onAutoForward": "silent" }
   },

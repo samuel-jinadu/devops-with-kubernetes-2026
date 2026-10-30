@@ -34,9 +34,7 @@
 - Deploy: `./deploy-gke.sh`
 - Extract config for lens: `kubectl config view --minify --raw`
 - Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
-- Create default cluster with published ports: `k3d cluster create --port 8082:30080@agent:0 -p 8081:80@loadbalancer --agents 2`
-- Create default cluster without ports when not using nodeports: `k3d cluster create -p 8081:80@loadbalancer --agents 2`
 - Sabotaging pods: `kubectl delete pod -l app=todo-app`
 
 ## Sources
-- .devcontainer code sourced from [lbrenman/k3d-codespace](https://github.com/lbrenman/k3d-codespace). Used to make a k3d codespace.
+- .devcontainer code originally based on [lbrenman/k3d-codespace](https://github.com/lbrenman/k3d-codespace), adapted for the floci-gcp GKE emulator.

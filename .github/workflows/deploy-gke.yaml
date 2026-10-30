@@ -1,0 +1,91 @@
+name: Deploy to GKE
+
+on:
+  workflow_run:
+    workflows: ["Publish image to GHCR"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-gke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # GATE 1 — repo variable (unset = run) — combined with publish-success check
+    if: |
+      vars.DISABLE_GKE_DEPLOY != 'true' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # GATE 2 — skip body but keep green if no GCP creds
+      - name: Check GCP credentials
+        id: gcp
+        run: |
+          if [ -z "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ] || \
+             [ -z "${{ secrets.GCP_SERVICE_ACCOUNT }}" ]; then
+            echo "::notice::No GCP credentials configured — deploy skipped."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gcp.outputs.skip == 'false'
+
+      - name: Authenticate to Google Cloud
+        if: steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account:           ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        if: steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get GKE credentials
+        if: steps.gcp.outputs.skip == 'false'
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: dwk-cluster
+          location:     europe-north1-b
+
+      - name: Install sops
+        if: steps.gcp.outputs.skip == 'false'
+        run: |
+          VER=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
+          curl -sL "https://github.com/getsops/sops/releases/download/${VER}/sops_${VER#v}_amd64.deb" -o /tmp/sops.deb
+          sudo dpkg -i /tmp/sops.deb
+
+      - name: Deploy
+        if: steps.gcp.outputs.skip == 'false'
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
+          sops --decrypt postgres/postgres-credentials-project.enc.yaml | kubectl apply -f -
+
+          kubectl apply -f manifests/namespaces
+          kubectl apply -f gke-manifests/gateway.yaml
+
+          kubectl apply -f postgres/postgres.yaml
+          kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
+
+          kubectl apply -f ping-pong/gke-manifests
+          kubectl -n exercises rollout status deployment/pingpong-dep --timeout=120s
+
+          kubectl apply -f log-output/gke-manifests
+          kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
+
+          kubectl apply -k todo-backend/manifests
+          kubectl -n project rollout status deployment/todo-backend-deployment --timeout=120s
+
+          kubectl apply -k todo-app/manifests
+          kubectl -n project rollout status deployment/todo-app-deployment --timeout=120s
+
+          kubectl apply -f manifests/cronjobs
+          kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
