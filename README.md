@@ -36,6 +36,15 @@
 - [Exercise 3.10](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.10)
 - [Exercise 3.11](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.11)
 - [Exercise 3.12](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/3.12)
+- [Exercise 4.1](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.1)
+
+## Notes
+- Test readiness for logoutput and pingpong: `./test-readiness.sh`
+- Deploy: `./deploy-gke.sh`
+- Compatibile with true GKE and floci-gcp GKE simulation
+- Extract config for lens: `kubectl config view --minify --raw`
+- Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
+- Sabotaging pods: `kubectl delete pod -l app=todo-app`
 
 # Logs Screenshot
 ![Logs Screenshot](logs-screenshot.png)
@@ -61,13 +70,6 @@
 
 **Cons**
 - **Costs** — You pay for the instance (vCPU/RAM), storage, and backups on top of the GKE cluster. 
-
-## Notes
-- Deploy: `./deploy-gke.sh`
-- Compatibile with true GKE and floci-gcp GKE simulation
-- Extract config for lens: `kubectl config view --minify --raw`
-- Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
-- Sabotaging pods: `kubectl delete pod -l app=todo-app`
 
 ## Sources
 - .devcontainer code originally based on [lbrenman/k3d-codespace](https://github.com/lbrenman/k3d-codespace), adapted for the floci-gcp GKE emulator.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -89,8 +90,38 @@ func server(channel chan JSONResponse) {
 	fmt.Printf("Server started on port %s\n", port)
 	port = ":" + port
 
-	// Health‑check endpoint for GKE Ingress
+	// Liveness
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Legacy liveness (keep for compatibility with any client already hitting "/")
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Readiness: can we reach ping-pong?
+	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, os.Getenv("PINGPONGURL"), nil)
+		if err != nil {
+			http.Error(w, "bad config", http.StatusServiceUnavailable)
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, "pingpong unreachable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			http.Error(w, "pingpong returned "+resp.Status, http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})

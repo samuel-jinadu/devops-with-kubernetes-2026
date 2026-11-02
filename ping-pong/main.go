@@ -18,7 +18,6 @@ func main() {
 }
 
 func server() {
-	// postgres://user:password@localhost:5432/mydb?sslmode=disable
 	dsn := fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		os.Getenv("POSTGRES_USER"),
@@ -30,48 +29,64 @@ func server() {
 
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Fatal("Failed to parse config:", err)
+		log.Fatal("Failed to parse config:", err) // this IS a config error, still fatal
 	}
-
 	poolConfig.MaxConns = 25
 	poolConfig.MinConns = 5
 	poolConfig.MaxConnLifetime = time.Hour
 	poolConfig.MaxConnIdleTime = 30 * time.Minute
 	poolConfig.HealthCheckPeriod = time.Minute
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	// Lazy: does not connect, does not fail if DB is down.
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		log.Fatal("Failed to create pool:", err)
 	}
 	defer pool.Close()
 
-	// Verify the connection is established
-	if err := pool.Ping(ctx); err != nil {
-		log.Fatal("Failed to ping database:", err)
-	}
+	var mutex sync.Mutex
+	var count int64
 
-	log.Println("Successfully connected to PostgreSQL")
-
-	if err := createTable(ctx, pool); err != nil {
-		log.Fatalf("Failed to create table: %v", err)
-	}
+	// Background: retry table creation + counter load until both succeed.
+	// Non-blocking. The pod serves 503 on /readyz until this finishes.
+	go func() {
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := pool.Ping(ctx); err == nil {
+				if err := createTable(ctx, pool); err == nil {
+					if c, err := getCounter(ctx, pool); err == nil {
+						mutex.Lock()
+						count = c
+						mutex.Unlock()
+						log.Printf("Initialized counter = %d", c)
+						cancel()
+						return
+					}
+				}
+			}
+			cancel()
+			time.Sleep(3 * time.Second)
+		}
+	}()
 
 	port := os.Getenv("PORT")
 	fmt.Printf("Server started on port %s\n", port)
 	port = ":" + port
 
-	count, err := getCounter(ctx, pool)
-	if err != nil {
-		log.Fatalf("Something went wrong with getting the count from the database: %v", err)
-	}
-
-	var mutex sync.Mutex
-
-	// Health‑check endpoint for GKE Ingress
+	// Liveness: process is up. Does NOT touch the DB.
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Readiness: DB must be reachable.
+	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
@@ -86,14 +101,15 @@ func server() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		mutex.Lock()
 		defer mutex.Unlock()
-		fmt.Fprintf(w, "pong %d", count)
-		count++
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		if err := setCounter(ctx, pool, count); err != nil {
-			log.Printf("Something went wrong when trying to set the counter: %v", err)
+		next := count + 1
+		if err := setCounter(ctx, pool, next); err != nil {
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
 			return
 		}
+		count = next
+		fmt.Fprintf(w, "pong %d", count)
 	})
 
 	log.Fatal(http.ListenAndServe(port, nil))
