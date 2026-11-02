@@ -17,43 +17,57 @@ import (
 var staticFS embed.FS
 
 type PageData struct {
-	Todos   []string
-	Image   string
-	PostURL string
+	Todos       []string
+	Image       string
+	PostURL     string
+	BreakAppURL string
+	IsHealthy   bool
 }
 
 func main() {
 	port := os.Getenv("PORT")
 	fmt.Printf("Server started on port %s\n", port)
-	port = ":" + port
 
 	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir("/files"))))
-
 	tmpl := template.Must(template.ParseFS(staticFS, "static/index.html"))
+
+	// Simple liveness: process is alive.
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	// Proxy the "break" to the backend.
+	http.HandleFunc("/break-app", func(w http.ResponseWriter, r *http.Request) {
+		resp, err := http.Post(os.Getenv("TODOBACKENDBREAK_URL"), "text/plain", nil)
+		if err != nil {
+			http.Error(w, "failed to break backend: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp.Body.Close()
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		var todos []string
+		isHealthy := true
 
 		resp, err := http.Get(os.Getenv("TODOSURL"))
-		if err != nil {
-			fmt.Printf("An error occurred when trying to get todos: %v\n", err)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			fmt.Printf("unexpected status: %s\n", resp.Status)
-			return
+		if err != nil || resp.StatusCode != http.StatusOK {
+			isHealthy = false
+		} else {
+			defer resp.Body.Close()
+			if err := json.NewDecoder(resp.Body).Decode(&todos); err != nil {
+				isHealthy = false
+			}
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&todos); err != nil {
-			fmt.Printf("error decoding todos: %v\n", err)
-			return
-		}
 		data := PageData{
-			Todos:   todos,
-			Image:   os.Getenv("IMAGEPATH"),
-			PostURL: os.Getenv("POSTURL"),
+			Todos:       todos,
+			Image:       os.Getenv("IMAGEPATH"),
+			PostURL:     os.Getenv("POSTURL"),
+			BreakAppURL: os.Getenv("BREAKAPP_URL"),
+			IsHealthy:   isHealthy, // ← exported, matches template
 		}
 
 		if err := tmpl.Execute(w, data); err != nil {
@@ -62,9 +76,8 @@ func main() {
 		}
 	})
 
-	// http.Handle("/", http.FileServer(http.FS(sub)))
 	go acquireImageLoop()
-	log.Fatal(http.ListenAndServe(port, nil))
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func acquireImageLoop() {

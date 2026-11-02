@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,9 +17,32 @@ import (
 func main() {
 	pool := setupPostgres()
 	defer pool.Close()
+	var isHealthy atomic.Bool
+	isHealthy.Store(true)
+
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if !isHealthy.Load() {
+			http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	http.HandleFunc("/break-app", func(w http.ResponseWriter, r *http.Request) {
+		isHealthy.Store(false)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("broken"))
+	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		todos, err := getTodos(ctx, pool)
 		if err != nil {

@@ -26,11 +26,26 @@
       margin-bottom: 32px;
     }
 
-    /* --- NEW: Form and Input styling --- */
+    .break-app-form {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 32px;
+    }
+    .break-app-form button {
+      padding: 12px 20px;
+      font-size: 1rem;
+      background-color: #ff5757;
+      color: rgb(255, 255, 255);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
     .todo-form {
       display: flex;
       justify-content: center;
-      gap: 8px; /* Space between input and button */
+      gap: 8px;
       margin-bottom: 32px;
     }
 
@@ -57,7 +72,6 @@
       background-color: #555;
     }
 
-    /* --- List styling --- */
     ul {
       list-style: none;
       padding: 0;
@@ -74,6 +88,29 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     }
 
+    /* --- NEW: System Failure Styling --- */
+    .system-failure {
+      background-color: #fde8e8;
+      border: 1px solid #f8b4b4;
+      border-radius: 12px;
+      padding: 40px 32px;
+      max-width: 800px;
+      margin: 0 auto 32px auto;
+    }
+
+    .system-failure h2 {
+      color: #9b1c1c;
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin: 0 0 16px 0;
+    }
+
+    .system-failure p {
+      color: #9b1c1c;
+      font-size: 1.2rem;
+      margin: 0;
+    }
+
     .footer {
       color: #777;
       font-size: 0.9rem;
@@ -82,30 +119,41 @@
 </head>
 <body>
 
-  <h1>Todo App</h1>
+  {{ if not .IsHealthy }}
+    <!-- Show this if the boolean is FALSE -->
+    <div class="system-failure">
+      <h2>System Failure</h2>
+      <p>The Todo App is currently unhealthy. Please wait for recovery.</p>
+    </div>
+  {{ else }}
+    <!-- Show this if the boolean is TRUE -->
+    <h1>Todo App</h1>
 
-  <img class="top-image" src="{{ .Image }}" alt="Forest">
+    <img class="top-image" src="{{ .Image }}" alt="Forest">
 
-  <!-- NEW: The Input Form -->
-  <form class="todo-form" action="{{ .PostURL }}" method="POST">
-    <!-- maxlength="140" stops anything over 140 characters -->
-    <input 
-      type="text" 
-      name="todo" 
-      maxlength="140" 
-      placeholder="What needs doing? (Max 140)" 
-      required
-    >
-    <button type="submit">Add</button>
-  </form>
+    <form class="todo-form" action="{{ .PostURL }}" method="POST">
+      <input 
+        type="text" 
+        name="todo" 
+        maxlength="140" 
+        placeholder="What needs doing? (Max 140)" 
+        required
+      >
+      <button type="submit">Add</button>
+    </form>
 
-  <ul>
-    {{ range .Todos }}
-      <li>{{ . }}</li>
-    {{ else }}
-      <li>No todos yet.</li>
-    {{ end }}
-  </ul>
+    <ul>
+      {{ range .Todos }}
+        <li>{{ . }}</li>
+      {{ else }}
+        <li>No todos yet.</li>
+      {{ end }}
+    </ul>
+    
+    <form class="break-app-form" action="{{ .BreakAppURL }}" method="POST">
+      <button type="submit">Break App</button>
+    </form>
+  {{ end }}
 
   <p class="footer">DevOps with Kubernetes 2026</p>
 

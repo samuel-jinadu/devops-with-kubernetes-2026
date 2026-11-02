@@ -10,3 +10,5 @@ data:
   TODOSURL: http://todo-backend-service-cluster-ip:2345/
   RANDOMPIC_URL: "https://picsum.photos/400/300"
   IMAGEREFRESHINTERVAL_MINS: "10"
+  BREAKAPP_URL: /break-app
+  TODOBACKENDBREAK_URL: http://todo-backend-service-cluster-ip:2345/break-app
