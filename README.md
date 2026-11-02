@@ -42,6 +42,7 @@
 
 ## Notes
 - Deploy: `./deploy-gke.sh`
+- Port-forward prometheus: `kubectl port-forward svc/prometheus-kube-prometheus-prometheus -n monitoring 9090:9090`
 - Test readiness for logoutput and pingpong: `./test-readiness.sh`      # make sure to run deploy script first
 - Compatibile with true GKE and floci-gcp GKE simulation
 - Extract config for lens: `kubectl config view --minify --raw`
