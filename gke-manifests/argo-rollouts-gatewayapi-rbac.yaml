@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argo-rollouts-gatewayapi-plugin
+rules:
+  # Permission to manage the HTTPRoute weights
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "update", "patch"]
+  # Permission to create the state-tracking ConfigMap in the exercises namespace
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argo-rollouts-gatewayapi-plugin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argo-rollouts-gatewayapi-plugin
+subjects:
+  - namespace: argo-rollouts
+    kind: ServiceAccount
+    name: argo-rollouts

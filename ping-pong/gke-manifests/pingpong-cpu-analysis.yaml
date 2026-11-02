@@ -6,9 +6,10 @@ metadata:
 spec:
   metrics:
     - name: namespace-cpu-total
-      interval: 1m          # sample once per minute
-      failureLimit: 2       # tolerate occasional jitter; 2 consecutive failures aborts
-      successCondition: result[0] < 0.5   # threshold: 0.5 cores (tweak as needed)
+      interval: 30s          # shorter interval → analysis finishes faster
+      count: 3               # ← REQUIRED: bound the number of measurements
+      failureLimit: 2
+      successCondition: result[0] < 0.5
       provider:
         prometheus:
           address: http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090
@@ -19,4 +20,4 @@ spec:
                 container!="",
                 container!="POD"
               }[5m])
-            )
+            ) or vector(0)

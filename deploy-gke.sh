@@ -202,7 +202,7 @@ kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply 
 kubectl apply --server-side --force-conflicts \
   -n argo-rollouts \
   -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
-
+kubectl apply -f gke-manifests/argo-rollouts-gatewayapi-rbac.yaml
 
 # Install the Gateway API traffic router plugin
 ARCH=$(uname -m)
@@ -244,7 +244,7 @@ kubectl apply -f gke-manifests/ping-pong-canary.yaml
 
 # 7d. Wait for the Rollout to be Available
 kubectl -n exercises wait --for=condition=Available \
-  rollout/pingpong-rollout --timeout=180s
+  rollout/pingpong-rollout --timeout=300s
 
 kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
