@@ -279,6 +279,20 @@ kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --time
 echo "▶ waiting for todo-app in $TARGET_NS…"
 kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
 
+# ─── 8b. Monitoring Stack (Prometheus) ─────────────────────────────────────────
+echo "▶ Installing/upgrading Prometheus stack..."
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Use the values file you already have to configure the stack
+# This is also a good place to disable components you don't need (like Grafana)
+helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f helm/monitoring-values.yaml \
+  --wait --timeout 10m
+
+echo "✅ Monitoring stack is ready."
+
 # ─── 9. CronJobs ──────────────────────────────────────────────────────────────
 # gen-todo: per-branch
 sed "s|namespace: project|namespace: ${TARGET_NS}|" \
