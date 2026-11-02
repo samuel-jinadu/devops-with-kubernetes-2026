@@ -181,10 +181,66 @@ kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
 kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
 
+# ─── 8b. Monitoring Stack (Prometheus) ─────────────────────────────────────────
+echo "▶ Installing/upgrading Prometheus stack..."
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Use the values file you already have to configure the stack
+# This is also a good place to disable components you don't need (like Grafana)
+helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring --create-namespace \
+  -f helm/monitoring-values.yaml \
+  --wait --timeout 10m
+
+echo "✅ Monitoring stack is ready."
+
+# Install the Argo Rollouts controller
+kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+# Install the Gateway API traffic router plugin
+
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)  PLUGIN_ARCH="amd64" ;;
+  aarch64|arm64) PLUGIN_ARCH="arm64" ;;
+esac
+PLUGIN_URL="https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.2.0/gatewayapi-plugin-linux-${PLUGIN_ARCH}"
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-rollouts-config
+  namespace: argo-rollouts
+data:
+  trafficRouterPlugins: |-
+    - name: "argoproj-labs/gatewayAPI"
+      location: "${PLUGIN_URL}"
+EOF
+
+kubectl -n argo-rollouts rollout restart deployment argo-rollouts
+echo "▶ waiting for Argo Rollouts controller…"
+kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
+
+# Confirm the plugin is loaded
+kubectl -n argo-rollouts logs deploy/argo-rollouts | grep -i "gatewayapi" || true
+
+
 # ─── 7. Shared infra (exercises namespace) ────────────────────────────────────
-kubectl apply -f ping-pong/gke-manifests
-echo "▶ waiting for ping-pong…"
-kubectl -n exercises rollout status deployment/pingpong-dep --timeout=120s
+# 7a. HTTPRoute first — the Rollout will modify its weights, so it must exist
+kubectl apply -f ping-pong/gke-manifests/httproute.yaml
+
+# 7b. AnalysisTemplate (Argo CRDs are installed by the section above)
+kubectl apply -f ping-pong/gke-manifests/pingpong-cpu-analysis.yaml
+
+# 7c. Canary Services + Rollout
+kubectl apply -f gke-manifests/ping-pong-canary.yaml
+
+# 7d. Wait for the Rollout to be Available
+kubectl -n exercises wait --for=condition=Available \
+  rollout/pingpong-rollout --timeout=180s
 
 kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
@@ -279,19 +335,6 @@ kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --time
 echo "▶ waiting for todo-app in $TARGET_NS…"
 kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
 
-# ─── 8b. Monitoring Stack (Prometheus) ─────────────────────────────────────────
-echo "▶ Installing/upgrading Prometheus stack..."
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
-# Use the values file you already have to configure the stack
-# This is also a good place to disable components you don't need (like Grafana)
-helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace \
-  -f helm/monitoring-values.yaml \
-  --wait --timeout 10m
-
-echo "✅ Monitoring stack is ready."
 
 # ─── 9. CronJobs ──────────────────────────────────────────────────────────────
 # gen-todo: per-branch
@@ -322,12 +365,7 @@ if [ "$TARGET_NS" = "project" ]; then
   fi
 fi
 
-# ─── 10. GKE-only: health check for ping-pong LB ──────────────────────────────
-if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-  echo "▶ Applying GKE HealthCheckPolicy…"
-  kubectl apply -f gke-manifests/pingponghealthcheckpolicy.yaml 2>/dev/null \
-    || kubectl apply -f gke-manifests/pingpong-healthcheckpolicy.yaml
-fi
+
 
 # ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"

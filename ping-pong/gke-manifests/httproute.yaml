@@ -18,5 +18,9 @@ spec:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: pingpong-service-cluster-ip
+        - name: pingpong-stable
           port: 2345
+          weight: 100
+        - name: pingpong-canary
+          port: 2345
+          weight: 0

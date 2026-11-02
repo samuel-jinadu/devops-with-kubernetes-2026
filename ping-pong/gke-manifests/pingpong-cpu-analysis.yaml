@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: pingpong-cpu-check
+  namespace: exercises
+spec:
+  metrics:
+    - name: namespace-cpu-total
+      interval: 1m          # sample once per minute
+      failureLimit: 2       # tolerate occasional jitter; 2 consecutive failures aborts
+      successCondition: result[0] < 0.5   # threshold: 0.5 cores (tweak as needed)
+      provider:
+        prometheus:
+          address: http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090
+          query: |
+            sum(
+              rate(container_cpu_usage_seconds_total{
+                namespace="exercises",
+                container!="",
+                container!="POD"
+              }[5m])
+            )

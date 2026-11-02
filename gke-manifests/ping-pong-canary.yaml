@@ -1,0 +1,94 @@
+# ── Stable Service ──
+apiVersion: v1
+kind: Service
+metadata:
+  name: pingpong-stable
+  namespace: exercises
+spec:
+  selector:
+    app: pingpong
+  ports:
+    - port: 2345
+      targetPort: 9090
+
+---
+# ── Canary Service ──
+apiVersion: v1
+kind: Service
+metadata:
+  name: pingpong-canary
+  namespace: exercises
+spec:
+  selector:
+    app: pingpong
+  ports:
+    - port: 2345
+      targetPort: 9090
+
+---
+# ── Rollout ──
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: pingpong-rollout
+  namespace: exercises
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: pingpong
+  template:
+    metadata:
+      labels:
+        app: pingpong
+    spec:
+      containers:
+        - name: pingpong
+          image: ghcr.io/samuel-jinadu/ping-pong-app:main
+          ports:
+            - containerPort: 9090
+          env:
+            - name: PORT
+              value: "9090"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dbname
+            - name: POSTGRES_HOST
+              value: postgres-svc
+            - name: POSTGRES_PORT
+              value: "5432"
+  strategy:
+    canary:
+      canaryService: pingpong-canary
+      stableService: pingpong-stable
+      trafficRouting:
+        plugins:
+          argoproj-labs/gatewayAPI:
+            httpRoute: pingpong-route
+            namespace: exercises
+      steps:
+        - pause: { duration: 5m }
+        - setWeight: 20
+        - pause: { duration: 30s }
+        - analysis:
+            templates:
+              - templateName: pingpong-cpu-check
+        - setWeight: 50
+        - pause: { duration: 30s }
+        - analysis:
+            templates:
+              - templateName: pingpong-cpu-check
+        - setWeight: 100
