@@ -197,10 +197,14 @@ echo "✅ Monitoring stack is ready."
 
 # Install the Argo Rollouts controller
 kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+# Large CRDs need server-side apply — client-side apply stores the whole
+# manifest in an annotation that exceeds 256 KiB and gets rejected.
+kubectl apply --server-side --force-conflicts \
+  -n argo-rollouts \
+  -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
 
 # Install the Gateway API traffic router plugin
-
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64)  PLUGIN_ARCH="amd64" ;;

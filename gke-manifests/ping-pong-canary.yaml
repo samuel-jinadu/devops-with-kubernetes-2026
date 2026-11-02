@@ -80,7 +80,6 @@ spec:
             httpRoute: pingpong-route
             namespace: exercises
       steps:
-        - pause: { duration: 5m }
         - setWeight: 20
         - pause: { duration: 30s }
         - analysis:

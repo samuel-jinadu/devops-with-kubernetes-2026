@@ -6,6 +6,6 @@ metadata:
 data:
   MESSAGE: hello world
   PORT: "9090"
-  PINGPONGURL: http://pingpong-service-cluster-ip:2345/count
+  PINGPONGURL: http://pingpong-stable:2345/count
   information.txt: |
     this text is from file
