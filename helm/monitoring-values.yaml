@@ -11,3 +11,17 @@ grafana:
         httpHeaderName1: X-Scope-OrgID  
       secureJsonData:
         httpHeaderValue1: "1"         
+
+# ─── Emulator-friendly overrides ───
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
