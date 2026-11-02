@@ -39,8 +39,8 @@
 - [Exercise 4.1](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.1)
 
 ## Notes
-- Test readiness for logoutput and pingpong: `./test-readiness.sh`
 - Deploy: `./deploy-gke.sh`
+- Test readiness for logoutput and pingpong: `./test-readiness.sh`      # make sure to run deploy script first
 - Compatibile with true GKE and floci-gcp GKE simulation
 - Extract config for lens: `kubectl config view --minify --raw`
 - Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
