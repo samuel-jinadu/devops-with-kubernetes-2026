@@ -42,6 +42,11 @@ func main() {
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if !isHealthy.Load() {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		todos, err := getTodos(ctx, pool)
