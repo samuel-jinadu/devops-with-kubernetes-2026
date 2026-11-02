@@ -210,7 +210,7 @@ case "$ARCH" in
   x86_64)  PLUGIN_ARCH="amd64" ;;
   aarch64|arm64) PLUGIN_ARCH="arm64" ;;
 esac
-PLUGIN_URL="https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.2.0/gatewayapi-plugin-linux-${PLUGIN_ARCH}"
+PLUGIN_URL="https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.4.0/gatewayapi-plugin-linux-${PLUGIN_ARCH}"
 
 kubectl apply -f - <<EOF
 apiVersion: v1
