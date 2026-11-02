@@ -17,11 +17,17 @@ import (
 var staticFS embed.FS
 
 type PageData struct {
-	Todos       []string
+	Todos       []Todo
 	Image       string
 	PostURL     string
 	BreakAppURL string
 	IsHealthy   bool
+}
+
+type Todo struct {
+	ID   int    `db:"id"      json:"id"`
+	Text string `db:"todo"    json:"text"`
+	Done bool   `db:"is_done" json:"done"`
 }
 
 func main() {
@@ -49,7 +55,7 @@ func main() {
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		var todos []string
+		var todos []Todo
 		isHealthy := true
 
 		resp, err := http.Get(os.Getenv("TODOSURL"))

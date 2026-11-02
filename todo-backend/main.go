@@ -14,6 +14,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+type Todo struct {
+	ID   int    `db:"id"      json:"id"`
+	Text string `db:"todo"    json:"text"`
+	Done bool   `db:"is_done" json:"done"`
+}
+
 func main() {
 	pool := setupPostgres()
 	defer pool.Close()
@@ -46,7 +52,7 @@ func main() {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		
+
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 		todos, err := getTodos(ctx, pool)
@@ -56,6 +62,18 @@ func main() {
 			return
 		}
 		json.NewEncoder(w).Encode(todos)
+	})
+
+	http.HandleFunc("PUT /todos/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		if err := markTodoDone(ctx, pool, id); err != nil {
+			http.Error(w, fmt.Sprintf("An issue occurd when trying to mark todo done: %s", id), http.StatusBadRequest)
+			return
+		}
+		http.Redirect(w, r, os.Getenv("TODOAPP_ROUTE"), http.StatusSeeOther)
 	})
 
 	http.HandleFunc("/submit", func(w http.ResponseWriter, r *http.Request) {
@@ -145,21 +163,27 @@ func createTable(ctx context.Context, pool *pgxpool.Pool) error {
         CREATE TABLE IF NOT EXISTS Todos (
 			id          INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 			todo       TEXT NOT NULL,
+			is_done		BOOLEAN DEFAULT FALSE,
 			created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 		);
     `)
 	return err
 }
 
-func getTodos(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
-	rows, err := pool.Query(ctx, "SELECT todo FROM Todos")
+func getTodos(ctx context.Context, pool *pgxpool.Pool) ([]Todo, error) {
+	rows, err := pool.Query(ctx, "SELECT id, todo, is_done FROM Todos")
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, pgx.RowTo[string])
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[Todo])
 }
 
 func addTodo(ctx context.Context, pool *pgxpool.Pool, todo string) error {
-	_, err := pool.Exec(ctx, `INSERT INTO todos (todo) VALUES ($1)`, todo)
+	_, err := pool.Exec(ctx, `INSERT INTO Todos (todo) VALUES ($1)`, todo)
+	return err
+}
+
+func markTodoDone(ctx context.Context, pool *pgxpool.Pool, id string) error {
+	_, err := pool.Exec(ctx, `UPDATE Todos SET is_done = TRUE WHERE id = $1`, id)
 	return err
 }

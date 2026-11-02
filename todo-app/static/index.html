@@ -72,23 +72,75 @@
       background-color: #555;
     }
 
+    /* ---- Todo list ---- */
     ul {
       list-style: none;
       padding: 0;
-      max-width: 400px;
+      max-width: 720px;
       margin: 0 auto 32px auto;
       text-align: left;
     }
 
     li {
       background: #fff;
-      padding: 12px 16px;
+      padding: 16px 20px;
       margin-bottom: 8px;
       border-radius: 6px;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
     }
 
-    /* --- NEW: System Failure Styling --- */
+    li.todo-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-left: 4px solid #22c55e;
+    }
+
+    li.todo-item.done {
+      background: #f3f4f6;
+      border-left-color: #9ca3af;
+      color: #6b7280;
+    }
+
+    li.todo-item.done .todo-text {
+      text-decoration: line-through;
+    }
+
+    .todo-text {
+      flex: 1;
+      overflow-wrap: anywhere;
+    }
+
+    .mark-done-form {
+      margin: 0;
+      display: inline;
+    }
+
+    .mark-done-btn {
+      padding: 8px 16px;
+      font-size: 0.95rem;
+      font-weight: 500;
+      background-color: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .mark-done-btn:hover {
+      background-color: #1d4ed8;
+    }
+
+    .done-badge {
+      color: #16a34a;
+      font-weight: 700;
+      font-size: 0.95rem;
+      white-space: nowrap;
+    }
+
+    /* --- System Failure Styling --- */
     .system-failure {
       background-color: #fde8e8;
       border: 1px solid #f8b4b4;
@@ -132,11 +184,11 @@
     <img class="top-image" src="{{ .Image }}" alt="Forest">
 
     <form class="todo-form" action="{{ .PostURL }}" method="POST">
-      <input 
-        type="text" 
-        name="todo" 
-        maxlength="140" 
-        placeholder="What needs doing? (Max 140)" 
+      <input
+        type="text"
+        name="todo"
+        maxlength="140"
+        placeholder="What needs doing? (Max 140)"
         required
       >
       <button type="submit">Add</button>
@@ -144,18 +196,64 @@
 
     <ul>
       {{ range .Todos }}
-        <li>{{ . }}</li>
+        <li class="todo-item{{ if .Done }} done{{ end }}">
+          <span class="todo-text">{{ .Text }}</span>
+
+          {{ if .Done }}
+            <span class="done-badge">Done</span>
+          {{ else }}
+            <!--
+              Real PUT /todos/{id}.
+              JS intercepts this form and sends fetch(..., { method: "PUT" }).
+              Without JS, falls back to POST with _method=PUT (method override middleware).
+            -->
+            <form
+              class="mark-done-form"
+              action="/todos/{{ .ID }}"
+              method="POST"
+              data-todo-id="{{ .ID }}"
+            >
+              <input type="hidden" name="_method" value="PUT">
+              <button type="submit" class="mark-done-btn">Mark done</button>
+            </form>
+          {{ end }}
+        </li>
       {{ else }}
         <li>No todos yet.</li>
       {{ end }}
     </ul>
-    
+
     <form class="break-app-form" action="{{ .BreakAppURL }}" method="POST">
       <button type="submit">Break App</button>
     </form>
   {{ end }}
 
   <p class="footer">DevOps with Kubernetes 2026</p>
+
+  <script>
+    // Turn "Mark done" form submissions into a real PUT /todos/{id}
+    document.querySelectorAll("form.mark-done-form").forEach(function (form) {
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+
+        const id = form.dataset.todoId;
+
+        fetch("/todos/" + encodeURIComponent(id), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ done: true }),
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            window.location.reload();
+          })
+          .catch(function (err) {
+            console.error("Failed to mark done:", err);
+            alert("Could not mark todo as done.");
+          });
+      });
+    });
+  </script>
 
 </body>
 </html>
