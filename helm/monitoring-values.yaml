@@ -13,7 +13,7 @@ grafana:
         httpHeaderValue1: "1"         
 
 # ─── Emulator-friendly overrides ───
-prometheus-node-exporter:
+nodeExporter:
   enabled: false
 prometheus-pushgateway:
   enabled: false
