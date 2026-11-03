@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # ─── 0. Deployment target ─────────────────────────────────────────────────────
-# TARGET_NS:  namespace for the project app (defaults to "project" = main)
+# TARGET_NS:  namespace for the project app (defaults to "project" = main).
+#             When TARGET_NS=project, the project is managed by Argo CD;
+#             when TARGET_NS=<branch>, the branch is applied directly (kubectl).
 # TARGET_TAG: image tag for todo-backend/todo-app (defaults to "main")
 TARGET_NS="${TARGET_NS:-project}"
 TARGET_TAG="${TARGET_TAG:-main}"
@@ -10,8 +12,6 @@ BACKUP_BUCKET="${BACKUP_BUCKET:-todo-backups-$(gcloud config get-value project 2
 
 # Optional override for the emulator GCS endpoint.
 # If unset, deploy-gke.sh auto-detects (host.docker.internal → floci-gcp IP → 172.17.0.1).
-# If auto-detection is wrong for your setup, set this to something like:
-#   STORAGE_EMULATOR_HOST=http://192.168.1.42:4588
 STORAGE_EMULATOR_HOST="${STORAGE_EMULATOR_HOST:-}"
 
 # Guardrails — reject obvious mistakes early
@@ -40,8 +40,7 @@ detect_emulator_host() {
     return
   fi
 
-  # 2. host.docker.internal (works when Docker sets it up — Docker Desktop, or
-  #    containers started with --add-host=host.docker.internal:host-gateway).
+  # 2. host.docker.internal (works when Docker sets it up).
   if getent hosts host.docker.internal >/dev/null 2>&1; then
     echo "host.docker.internal"
     return
@@ -131,6 +130,8 @@ sed "s|gatewayClassName: .*|gatewayClassName: ${GATEWAY_CLASS}|" \
   gke-manifests/gateway.yaml | kubectl apply -f -
 
 # ─── 5. Secrets (decrypted from sops) ─────────────────────────────────────────
+# Secrets are ALWAYS applied by deploy-gke.sh (never by Argo CD) so they exist
+# before workloads sync. Argo owns the workloads; deploy-gke owns the secrets.
 sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
 sops --decrypt postgres/postgres-credentials-project.enc.yaml \
   | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
@@ -139,7 +140,7 @@ sops --decrypt broadcaster/manifests/broadcaster-credentials.enc.yaml \
   | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
   | kubectl apply -f -
 
-# ─── 5b. Storage SA secret + GCS bucket (project namespace only) ──────────────
+# ─── 5b. Storage SA secret + GCS bucket + backup-config ConfigMap ────────────
 if [ "$TARGET_NS" = "project" ]; then
   if [ -f key.json ]; then
     echo "▶ Creating storage-sa-key secret from key.json"
@@ -161,9 +162,6 @@ if [ "$TARGET_NS" = "project" ]; then
     fi
   else
     # ── Emulator: create bucket via the GCS JSON API ──
-    # We use curl instead of gsutil here because gsutil tries to load credentials
-    # that the emulator doesn't validate; a direct API call is simpler and more
-    # reliable. The emulator serves GCS on the same port (4588) as everything else.
     if curl -fsS "http://localhost:4588/storage/v1/b/${BACKUP_BUCKET}" >/dev/null 2>&1; then
       echo "▶ Emulator bucket gs://${BACKUP_BUCKET} already exists"
     else
@@ -177,6 +175,23 @@ if [ "$TARGET_NS" = "project" ]; then
       fi
     fi
   fi
+
+  # ── backup-config ConfigMap: env-specific values for the gitops-owned backup
+  #    CronJob (envFrom: backup-config). Argo cannot sed placeholders at apply
+  #    time, so the environment-specific bits are pushed by deploy-gke.sh here.
+  if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
+    echo "▶ Creating backup-config ConfigMap (real GKE)"
+    kubectl -n project create configmap backup-config \
+      --from-literal=BACKUP_BUCKET="${BACKUP_BUCKET}" \
+      --dry-run=client -o yaml | kubectl apply -f -
+  else
+    EMULATOR_HOST=$(detect_emulator_host)
+    echo "▶ Creating backup-config ConfigMap (emulator, STORAGE_EMULATOR_HOST=http://${EMULATOR_HOST}:4588)"
+    kubectl -n project create configmap backup-config \
+      --from-literal=BACKUP_BUCKET="${BACKUP_BUCKET}" \
+      --from-literal=STORAGE_EMULATOR_HOST="http://${EMULATOR_HOST}:4588" \
+      --dry-run=client -o yaml | kubectl apply -f -
+  fi
 fi
 
 # ─── 6. Postgres (shared, always in exercises) ────────────────────────────────
@@ -184,13 +199,11 @@ kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
 kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
 
-# ─── 8b. Monitoring Stack (Prometheus) ─────────────────────────────────────────
+# ─── 8b. Monitoring Stack (Prometheus) + Argo Rollouts ───────────────────────
 echo "▶ Installing/upgrading Prometheus stack..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
-# Use the values file you already have to configure the stack
-# This is also a good place to disable components you don't need (like Grafana)
 helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   -f helm/monitoring-values.yaml \
@@ -260,10 +273,9 @@ helm upgrade --install nats nats/nats \
   --set config.jetstream.enabled=false \
   --wait --timeout 5m
 
-# Wait for the StatefulSet (chart creates one)
 kubectl -n exercises rollout status statefulset/nats --timeout=180s
 
-# ─── 7c. Argo CD (GitOps for log-output) ──────────────────────────────────────
+# ─── 7c. Argo CD (GitOps for log-output + project) ───────────────────────────
 echo "▶ Installing/upgrading Argo CD..."
 helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
 helm repo update argo
@@ -282,14 +294,21 @@ echo "▶ waiting for Argo CD components…"
 kubectl -n argocd rollout status deployment/argocd-server      --timeout=300s
 kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
 
-# ─── 8. Project app → TARGET_NS with TARGET_TAG and per-branch URL prefixes ───
-APP_TMP=$(mktemp -d)
+# ─── 8. Project app ──────────────────────────────────────────────────────────
+# When TARGET_NS=project, the workloads are managed by Argo CD (section 10).
+# For branch deploys (TARGET_NS=<branch>), apply directly from gitops/project/
+# so the branch owner sees their changes immediately. The gitops/ directory is
+# the single source of truth for project manifests since exercise 4.8.
+if [ "$TARGET_NS" = "project" ]; then
+  echo "▶ project namespace is managed by Argo CD — skipping direct apply (see section 10)."
+else
+  APP_TMP=$(mktemp -d)
 
-cp -r todo-backend/manifests "$APP_TMP/todo-backend-manifests"
-cp -r todo-app/manifests     "$APP_TMP/todo-app-manifests"
+  cp -r gitops/project/todo-backend "$APP_TMP/todo-backend-manifests"
+  cp -r gitops/project/todo-app     "$APP_TMP/todo-app-manifests"
 
-{
-  cat <<EOF
+  {
+    cat <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: ${TARGET_NS}
@@ -303,7 +322,6 @@ resources:
   - ./todo-app-manifests
 EOF
 
-  if [ "$TARGET_NS" != "project" ]; then
     cat <<EOF
 patches:
   - target: { kind: HTTPRoute, name: todo-backend-route }
@@ -360,53 +378,29 @@ patches:
                   - name: TODOAPP_ROUTE
                     value: /${TARGET_NS}/
 EOF
-  fi
-} > "$APP_TMP/kustomization.yaml"
+  } > "$APP_TMP/kustomization.yaml"
 
-kubectl apply -k "$APP_TMP"
-rm -rf "$APP_TMP"
+  kubectl apply -k "$APP_TMP"
+  rm -rf "$APP_TMP"
 
-echo "▶ waiting for todo-backend in $TARGET_NS…"
-kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --timeout=120s
-echo "▶ waiting for todo-app in $TARGET_NS…"
-kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
+  echo "▶ waiting for todo-backend in $TARGET_NS…"
+  kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --timeout=120s
+  echo "▶ waiting for todo-app in $TARGET_NS…"
+  kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
 
+  # Branch cronjob (gen-todo)
+  sed "s|namespace: project|namespace: ${TARGET_NS}|" \
+    gitops/project/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
 
-# ─── 9. CronJobs ──────────────────────────────────────────────────────────────
-# gen-todo: per-branch
-sed "s|namespace: project|namespace: ${TARGET_NS}|" \
-  manifests/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
-
-# backup: project only
-if [ "$TARGET_NS" = "project" ]; then
-  if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-    # ── Real GKE: strip the emulator block, apply as-is ──
-    sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
-        -e '/STORAGE_EMULATOR_HOST_BLOCK_START/,/STORAGE_EMULATOR_HOST_BLOCK_END/d' \
-        manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
-  else
-    # ── Emulator: substitute the host ──
-    EMULATOR_HOST=$(detect_emulator_host)
-    if [ -n "$EMULATOR_HOST" ]; then
-      echo "▶ Emulator detected: STORAGE_EMULATOR_HOST=http://${EMULATOR_HOST}:4588"
-      sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
-          -e "s|STORAGE_EMULATOR_HOST_PLACEHOLDER|http://${EMULATOR_HOST}:4588|" \
-          manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
-    else
-      echo "⚠️  Could not detect emulator host; deploying without emulator-GCS support"
-      sed -e "s|BACKUP_BUCKET_PLACEHOLDER|${BACKUP_BUCKET}|" \
-          -e '/STORAGE_EMULATOR_HOST_BLOCK_START/,/STORAGE_EMULATOR_HOST_BLOCK_END/d' \
-          manifests/cronjobs/backup-todo-db.yaml | kubectl apply -f -
-    fi
-  fi
+  # Branch broadcaster — the secret is already created in $TARGET_NS by §5.
+  sed "s|namespace: project|namespace: ${TARGET_NS}|" \
+    gitops/project/broadcaster/deployment.yaml | kubectl apply -f -
+  echo "▶ waiting for broadcaster in $TARGET_NS…"
+  kubectl -n "$TARGET_NS" rollout status deployment/broadcaster --timeout=180s
 fi
 
-# ─── 9b. Broadcaster ──────────────────────────────────────────────────────────
-kubectl apply -k broadcaster/manifests
-echo "▶ waiting for broadcaster (6 replicas)…"
-kubectl -n project rollout status deployment/broadcaster --timeout=180s
 
-# ─── 10. Argo CD Application (GitOps for log-output) ─────────────────────────
+# ─── 10. Argo CD Applications (GitOps) ────────────────────────────────────────
 # Determine the Git repo Argo CD should watch. When run in CI, use the actual
 # repo (works for forks). When run locally, default to the origin.
 GITOPS_REPO_URL="${GITOPS_REPO_URL:-}"
@@ -419,29 +413,39 @@ if [ -z "${GITOPS_REPO_URL}" ]; then
   fi
 fi
 
+# log-output Application (exercise 4.7) — tracks GITOPS_REVISION (branch-aware).
 echo "▶ Creating Argo CD Application log-output (repo=${GITOPS_REPO_URL}, rev=${GITOPS_REVISION})"
 sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
     -e "s|__GITOPS_REVISION__|${GITOPS_REVISION}|g" \
     argocd/log-output-app.yaml | kubectl apply -f -
 
-echo "▶ waiting for Argo CD to sync log-output…"
-for i in $(seq 1 60); do
-  synced=$(kubectl -n argocd get application log-output \
-             -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
-  health=$(kubectl -n argocd get application log-output \
-             -o jsonpath='{.status.health.status}' 2>/dev/null || true)
-  if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
-    echo "  ✅ Argo CD synced log-output: ${synced}/${health}"
-    break
-  fi
-  echo "  Argo status: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
-  sleep 5
-  if [ "$i" -eq 60 ]; then
-    echo "❌ Argo CD did not converge within 5 minutes."
-    kubectl -n argocd get application log-output -o yaml | tail -80
-    exit 1
-  fi
+# project Application (exercise 4.8) — always tracks main, regardless of the
+# branch that triggered this deploy. Branches have already been applied above.
+echo "▶ Creating Argo CD Application project (repo=${GITOPS_REPO_URL}, rev=main)"
+sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
+    argocd/project-app.yaml | kubectl apply -f -
+
+echo "▶ waiting for Argo CD to sync log-output and project…"
+for app in log-output project; do
+  for i in $(seq 1 60); do
+    synced=$(kubectl -n argocd get application "$app" \
+               -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
+    health=$(kubectl -n argocd get application "$app" \
+               -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+    if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
+      echo "  ✅ $app: ${synced}/${health}"
+      break
+    fi
+    echo "  $app: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
+    sleep 5
+    if [ "$i" -eq 60 ]; then
+      echo "❌ Argo CD application '$app' did not converge within 5 minutes."
+      kubectl -n argocd get application "$app" -o yaml | tail -80
+      exit 1
+    fi
+  done
 done
+
 
 # ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"

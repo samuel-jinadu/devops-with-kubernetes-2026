@@ -4,7 +4,7 @@ metadata:
   name: backup-todo-db-cronjob
   namespace: project
 spec:
-  schedule: "0 3 * * *"   # daily at 03:00 UTC
+  schedule: "0 3 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -30,14 +30,12 @@ spec:
                   pg_dump -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f "$FILE"
 
                   if [ -n "$STORAGE_EMULATOR_HOST" ]; then
-                    # ── Emulator: upload via GCS JSON API with curl (no auth, no gsutil)
                     echo "▶ curl upload → ${STORAGE_EMULATOR_HOST}/upload/storage/v1/b/${BACKUP_BUCKET}/o"
                     curl -fsS -X POST \
                       "${STORAGE_EMULATOR_HOST}/upload/storage/v1/b/${BACKUP_BUCKET}/o?uploadType=media&name=todos-${TS}.sql" \
                       -H "Content-Type: application/octet-stream" \
                       --data-binary "@${FILE}" >/dev/null
                   else
-                    # ── Real GKE: gsutil to real GCS with the mounted SA key
                     echo "▶ gsutil cp → gs://${BACKUP_BUCKET}/todos-${TS}.sql"
                     gsutil cp "$FILE" "gs://${BACKUP_BUCKET}/todos-${TS}.sql"
                   fi
@@ -68,12 +66,10 @@ spec:
                       key: password
                 - name: GOOGLE_APPLICATION_CREDENTIALS
                   value: /etc/gcp/key.json
-                - name: BACKUP_BUCKET
-                  value: BACKUP_BUCKET_PLACEHOLDER
-                # STORAGE_EMULATOR_HOST_BLOCK_START
-                - name: STORAGE_EMULATOR_HOST
-                  value: "STORAGE_EMULATOR_HOST_PLACEHOLDER"
-                # STORAGE_EMULATOR_HOST_BLOCK_END
+              envFrom:
+                - configMapRef:
+                    name: backup-config
+                    optional: true
               volumeMounts:
                 - name: gcp-key
                   mountPath: /etc/gcp

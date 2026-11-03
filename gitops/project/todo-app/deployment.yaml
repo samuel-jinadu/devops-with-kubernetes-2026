@@ -16,7 +16,7 @@ spec:
         app: todo-app
     spec:
       volumes:
-        - name: pingpong-data           # PVC: cross-pod share with ping-pong and log output
+        - name: pingpong-data
           persistentVolumeClaim:
             claimName: shared-claim
       containers:

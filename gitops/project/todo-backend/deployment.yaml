@@ -28,7 +28,7 @@ spec:
                   name: postgres-credentials
                   key: dbname
             - name: POSTGRES_HOST
-              value:  postgres-svc.exercises.svc.cluster.local
+              value: postgres-svc.exercises.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
           command:
@@ -86,7 +86,7 @@ spec:
                   name: postgres-credentials
                   key: dbname
             - name: POSTGRES_HOST
-              value:  postgres-svc.exercises.svc.cluster.local
+              value: postgres-svc.exercises.svc.cluster.local
             - name: POSTGRES_PORT
               value: "5432"
             - name: NATS_URL
