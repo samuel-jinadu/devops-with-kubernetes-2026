@@ -19,6 +19,10 @@ spec:
           env:
             - name: NATS_URL
               value: nats://nats.exercises.svc.cluster.local:4222
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: GENERIC_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:

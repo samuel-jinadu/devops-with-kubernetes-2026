@@ -27,15 +27,25 @@ type todoEvent struct {
 	Info    string `json:"info,omitempty"`
 }
 
+func natsSubject() string {
+	if s := os.Getenv("NATS_SUBJECT"); s != "" {
+		return s
+	}
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return "todos." + ns
+	}
+	return "todos" // local dev fallback
+}
+
 func publishTodoEvent(nc *nats.Conn, user, message string, info string) {
 	if nc == nil {
 		return
 	}
 	payload, _ := json.Marshal(todoEvent{User: user, Message: message, Info: info})
-	if err := nc.Publish("todos", payload); err != nil {
+	if err := nc.Publish(natsSubject(), payload); err != nil {
 		log.Printf("NATS publish failed: %v", err)
 	}
-	_ = nc.Flush() // best-effort; do not block the HTTP response
+	_ = nc.Flush()
 }
 
 func main() {

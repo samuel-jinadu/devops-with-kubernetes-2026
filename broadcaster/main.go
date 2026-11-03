@@ -17,6 +17,16 @@ type todoEvent struct {
 	Info    string `json:"info,omitempty"`
 }
 
+func natsSubject() string {
+	if s := os.Getenv("NATS_SUBJECT"); s != "" {
+		return s
+	}
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return "todos." + ns
+	}
+	return "todos"
+}
+
 func main() {
 	natsURL := os.Getenv("NATS_URL")
 	webhookURL := os.Getenv("GENERIC_WEBHOOK_URL")
@@ -42,7 +52,9 @@ func main() {
 	// QueueSubscribe is the critical line:
 	// every replica uses the SAME queue group name "broadcasters".
 	// NATS delivers each message to exactly ONE member of the group.
-	_, err = nc.QueueSubscribe("todos", "broadcasters", func(msg *nats.Msg) {
+	subject := natsSubject()
+	log.Printf("subscribing to subject %q queue group=broadcasters log_only=%v", subject, logOnly)
+	_, err = nc.QueueSubscribe(subject, "broadcasters", func(msg *nats.Msg) {
 		var evt todoEvent
 		if err := json.Unmarshal(msg.Data, &evt); err != nil {
 			log.Printf("bad message: %v", err)
