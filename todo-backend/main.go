@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 )
 
 type Todo struct {
@@ -20,7 +21,31 @@ type Todo struct {
 	Done bool   `db:"is_done" json:"done"`
 }
 
+type todoEvent struct {
+	User    string `json:"user"`
+	Message string `json:"message"`
+	Info    string `json:"info,omitempty"`
+}
+
+func publishTodoEvent(nc *nats.Conn, user, message string, info string) {
+	if nc == nil {
+		return
+	}
+	payload, _ := json.Marshal(todoEvent{User: user, Message: message, Info: info})
+	if err := nc.Publish("todos", payload); err != nil {
+		log.Printf("NATS publish failed: %v", err)
+	}
+	_ = nc.Flush() // best-effort; do not block the HTTP response
+}
+
 func main() {
+	nc, err := nats.Connect(os.Getenv("NATS_URL"))
+	if err != nil {
+		log.Printf("NATS connection failed (messages will be dropped): %v", err)
+		nc = nil // non-fatal: the app still works without NATS
+	} else {
+		defer nc.Close()
+	}
 	pool := setupPostgres()
 	defer pool.Close()
 	var isHealthy atomic.Bool
@@ -73,6 +98,7 @@ func main() {
 			http.Error(w, fmt.Sprintf("An issue occurd when trying to mark todo done: %s", id), http.StatusBadRequest)
 			return
 		}
+		publishTodoEvent(nc, "bot", fmt.Sprintf("A todo was marked done (id=%s)", id), id)
 		http.Redirect(w, r, os.Getenv("TODOAPP_ROUTE"), http.StatusSeeOther)
 	})
 
@@ -88,6 +114,7 @@ func main() {
 		}
 
 		todo := r.PostFormValue("todo")
+
 		log.Printf("Backend received POST request for todo with value: %s\n", todo)
 		if len(todo) > 140 {
 			log.Printf("REJECTED todo too long (len=%d): %q", len(todo), todo)
@@ -104,6 +131,7 @@ func main() {
 			http.Error(w, "An issue occured inserting the new todo into the databse", http.StatusInternalServerError)
 			return
 		}
+		publishTodoEvent(nc, "bot", "A todo was created: "+todo, todo)
 		http.Redirect(w, r, os.Getenv("TODOAPP_ROUTE"), http.StatusSeeOther)
 	})
 

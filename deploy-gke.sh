@@ -135,6 +135,9 @@ sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f
 sops --decrypt postgres/postgres-credentials-project.enc.yaml \
   | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
   | kubectl apply -f -
+sops --decrypt broadcaster/manifests/broadcaster-credentials.enc.yaml \
+  | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
+  | kubectl apply -f -
 
 # ─── 5b. Storage SA secret + GCS bucket (project namespace only) ──────────────
 if [ "$TARGET_NS" = "project" ]; then
@@ -233,22 +236,35 @@ kubectl -n argo-rollouts logs deploy/argo-rollouts | grep -i "gatewayapi" || tru
 
 
 # ─── 7. Shared infra (exercises namespace) ────────────────────────────────────
-# 7a. HTTPRoute first — the Rollout will modify its weights, so it must exist
+# HTTPRoute first — the Rollout will modify its weights, so it must exist
 kubectl apply -f ping-pong/gke-manifests/httproute.yaml
 
-# 7b. AnalysisTemplate (Argo CRDs are installed by the section above)
+# AnalysisTemplate (Argo CRDs are installed by the section above)
 kubectl apply -f ping-pong/gke-manifests/pingpong-cpu-analysis.yaml
 
-# 7c. Canary Services + Rollout
+# Canary Services + Rollout
 kubectl apply -f gke-manifests/ping-pong-canary.yaml
 
-# 7d. Wait for the Rollout to be Available
+# Wait for the Rollout to be Available
 kubectl -n exercises wait --for=condition=Available \
   rollout/pingpong-rollout --timeout=300s
 
 kubectl apply -f log-output/gke-manifests
 echo "▶ waiting for log-output…"
 kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
+
+# ─── 7b. NATS ────────────────────────────────────────────────────────────────
+echo "▶ Installing/upgrading NATS..."
+helm repo add nats https://nats-io.github.io/k8s/helm/charts/ 2>/dev/null || true
+helm repo update nats
+
+helm upgrade --install nats nats/nats \
+  --namespace exercises --create-namespace \
+  --set config.jetstream.enabled=false \
+  --wait --timeout 5m
+
+# Wait for the StatefulSet (chart creates one)
+kubectl -n exercises rollout status statefulset/nats --timeout=180s
 
 # ─── 8. Project app → TARGET_NS with TARGET_TAG and per-branch URL prefixes ───
 APP_TMP=$(mktemp -d)
@@ -369,7 +385,10 @@ if [ "$TARGET_NS" = "project" ]; then
   fi
 fi
 
-
+# ─── 9b. Broadcaster ──────────────────────────────────────────────────────────
+kubectl apply -k broadcaster/manifests
+echo "▶ waiting for broadcaster (6 replicas)…"
+kubectl -n project rollout status deployment/broadcaster --timeout=180s
 
 # ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"

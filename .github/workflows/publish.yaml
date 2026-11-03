@@ -44,3 +44,8 @@ jobs:
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/ping-pong-app
+      - name: Build and push broadcaster
+        working-directory: broadcaster
+        run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
+        env:
+          KO_DOCKER_REPO: ghcr.io/samuel-jinadu/broadcaster

@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 concurrency:
-  group: emulator-smoke-${{ github.ref }}
+  group: emulator-smoke-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,12 +20,13 @@ jobs:
       vars.ENABLE_EMULATOR_SMOKE_TEST == 'true' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       CLOUDSDK_API_ENDPOINT_OVERRIDES_CONTAINER: http://localhost:4588/container/
       CLOUDSDK_API_ENDPOINT_OVERRIDES_SERVICEUSAGE: http://localhost:4588/
       CLOUDSDK_CORE_PROJECT: floci-local
       CLOUDSDK_AUTH_ACCESS_TOKEN: floci
+      GATEWAY_PORT: "8060"
     steps:
       - uses: actions/checkout@v4
 
@@ -41,9 +42,12 @@ jobs:
           curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" -o /tmp/kubectl
           sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
-          curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
-          sudo apt-get update -qq && sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin openssl
+          echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+            | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+          curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin openssl
           VER=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
           curl -sL "https://github.com/getsops/sops/releases/download/${VER}/sops_${VER#v}_amd64.deb" -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
@@ -58,7 +62,7 @@ jobs:
           for i in $(seq 1 60); do
             if docker logs floci-gcp 2>&1 | grep -q "floci-gcp Ready"; then
               echo "emulator process ready"
-              sleep 3   # give REST/gRPC routes a moment to bind
+              sleep 3
               exit 0
             fi
             sleep 2
@@ -80,13 +84,6 @@ jobs:
           docker logs floci-gcp --tail 100
           exit 1
 
-      # ── NEW: fabricate a syntactically-valid key.json (emulator ignores credentials) ──
-      # We deliberately don't use `gcloud iam service-accounts keys create` here because
-      # the emulator's IAM key generation isn't guaranteed to produce PKCS#8 PEM that
-      # gsutil's parser accepts. A locally generated RSA key is guaranteed parseable,
-      # and the emulator (IAM mode=DISABLED) accepts any credentials.
-      # This file lives only on the runner for the duration of this job — it's not a
-      # real key and it's not committed or stored anywhere.
       - name: Fabricate valid-structure key.json for emulator
         run: |
           PRIV=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null \
@@ -104,7 +101,7 @@ jobs:
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs"
           }
           EOF
-          python3 -c "import json; json.load(open('key.json'))"   # validate JSON parses
+          python3 -c "import json; json.load(open('key.json'))"
           echo "wrote key.json ($(wc -c < key.json) bytes)"
 
       - name: Run deploy-gke.sh against emulator
@@ -114,55 +111,32 @@ jobs:
           chmod +x deploy-gke.sh
           ./deploy-gke.sh
 
-      # ── NEW: trigger the backup CronJob and assert the upload landed in the emulator ──
       - name: Trigger backup CronJob and verify upload
         run: |
-          # ── Dump the CronJob that was ACTUALLY applied ───────────────────────
-          echo "═══ CronJob as applied by deploy-gke.sh ═══"
           kubectl -n project get cronjob backup-todo-db-cronjob -o yaml || true
-          echo "═════════════════════════════════════════"
-
-          # ── Confirm the referenced secret exists ────────────────────────────
-          echo "▶ checking secret storage-sa-key"
           kubectl -n project get secret storage-sa-key || {
-            echo "::error::secret storage-sa-key is missing — the CronJob pod will never start"
+            echo "::error::secret storage-sa-key is missing"
             exit 1
           }
 
           JOB="backup-test-${GITHUB_RUN_ID}"
-          kubectl -n project create job \
-            --from=cronjob/backup-todo-db-cronjob "${JOB}"
+          kubectl -n project create job --from=cronjob/backup-todo-db-cronjob "${JOB}"
 
           for i in $(seq 1 100); do
-            complete=$(kubectl -n project get job "${JOB}" \
-                        -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
-            failed=$(kubectl -n project get job "${JOB}" \
-                        -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
-            if [ "$complete" = "True" ]; then
-              echo "✅ backup job completed"
-              break
-            fi
-            if [ "$failed" = "True" ]; then
+            complete=$(kubectl -n project get job "${JOB}" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
+            failed=$(kubectl -n project get job "${JOB}"   -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}'   2>/dev/null || true)
+            if [ "$complete" = "True" ]; then echo "✅ backup job completed"; break; fi
+            if [ "$failed"   = "True" ]; then
               echo "::error::backup job failed"
-              echo "── job describe ──"
               kubectl -n project describe job "${JOB}" || true
-              echo "── pods with job-name label ──"
-              kubectl -n project get pods -l job-name="${JOB}" -o wide || true
-              echo "── pod describe ──"
-              kubectl -n project describe pods -l job-name="${JOB}" || true
-              echo "── logs ──"
               kubectl -n project logs -l job-name="${JOB}" --all-containers --tail=200 || true
-              echo "── recent events ──"
-              kubectl -n project get events --sort-by=.lastTimestamp | tail -40 || true
               exit 1
             fi
             sleep 3
             if [ "$i" -eq 100 ]; then
               echo "::error::backup job timed out"
               kubectl -n project describe job "${JOB}" || true
-              kubectl -n project get pods -l job-name="${JOB}" -o wide || true
               kubectl -n project logs -l job-name="${JOB}" --all-containers --tail=200 || true
-              kubectl -n project get events --sort-by=.lastTimestamp | tail -40 || true
               exit 1
             fi
           done
@@ -170,21 +144,36 @@ jobs:
           BUCKET=$(kubectl -n project get cronjob backup-todo-db-cronjob \
                      -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].env[?(@.name=="BACKUP_BUCKET")].value}')
           echo "▶ checking emulator bucket gs://${BUCKET}"
-
           COUNT=$(curl -fsS "http://localhost:4588/storage/v1/b/${BUCKET}/o" \
                     | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("items",[])))')
-          if [ "${COUNT}" -lt 1 ]; then
-            echo "::error::backup file not found in emulator bucket gs://${BUCKET}"
-            echo "  listed objects: ${COUNT}"
-            exit 1
-          fi
+          [ "${COUNT}" -ge 1 ] || { echo "::error::backup file not found in gs://${BUCKET}"; exit 1; }
           echo "✅ ${COUNT} object(s) present in gs://${BUCKET}"
 
       - name: Assert endpoints
         run: |
-          BASE="http://localhost:8060"
+          set -euo pipefail
+          # GitHub Actions tears down background processes between steps.
+          # Re-establish the port-forward if deploy-gke.sh's is gone.
+          if ! curl -fsS --max-time 2 "http://localhost:${GATEWAY_PORT}/pingpong" >/dev/null 2>&1; then
+            ENVOY_SVC=$(kubectl -n envoy-gateway-system get svc \
+              -l gateway.envoyproxy.io/owning-gateway-name=exercises-gateway \
+              -o jsonpath='{.items[0].metadata.name}')
+            pkill -f "kubectl.*port-forward.*${ENVOY_SVC}" 2>/dev/null || true
+            sleep 1
+            nohup kubectl -n envoy-gateway-system port-forward svc/"${ENVOY_SVC}" "${GATEWAY_PORT}:80" \
+              >/tmp/envoy-test-pf.log 2>&1 &
+            for i in $(seq 1 20); do
+              curl -fsS --max-time 2 "http://localhost:${GATEWAY_PORT}/pingpong" >/dev/null 2>&1 && break
+              sleep 1
+            done
+          fi
+
+          BASE="http://localhost:${GATEWAY_PORT}"
           fail=0
-          check() { curl -fsS --max-time 10 "$2" | grep -q -- "$3" || { echo "::error::$1 failed"; fail=1; }; }
+          check() {
+            curl -fsS --max-time 10 "$2" | grep -q -- "$3" \
+              || { echo "::error::$1 failed"; fail=1; }
+          }
 
           for i in $(seq 1 30); do
             curl -fsS "${BASE}/pingpong" >/dev/null 2>&1 && break
@@ -197,18 +186,151 @@ jobs:
 
           TODO="ci-$(date +%s)"
           curl -fsS -X POST --data-urlencode "todo=${TODO}" "${BASE}/submit" >/dev/null
-          curl -fsS "${BASE}/backend" | grep -q "$TODO" || { echo "::error::todo round-trip failed"; fail=1; }
+          curl -fsS "${BASE}/backend" | grep -q "$TODO" \
+            || { echo "::error::todo round-trip failed"; fail=1; }
 
           exit $fail
+
+      - name: Deploy counting sink
+        run: |
+          set -euo pipefail
+          kubectl -n project apply -f - <<'EOF'
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: sink-script
+            namespace: project
+          data:
+            server.py: |
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              class H(BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      length = int(self.headers.get('Content-Length', 0))
+                      self.rfile.read(length)
+                      print('RECEIVED', flush=True)
+                      self.send_response(200)
+                      self.send_header('Content-Length', '0')
+                      self.end_headers()
+                  def log_message(self, *a): pass
+              HTTPServer(('0.0.0.0', 80), H).serve_forever()
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: sink
+            namespace: project
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: sink
+            template:
+              metadata:
+                labels:
+                  app: sink
+              spec:
+                containers:
+                  - name: sink
+                    image: python:3.12-alpine
+                    command: ["python3", "/scripts/server.py"]
+                    volumeMounts:
+                      - name: scripts
+                        mountPath: /scripts
+                volumes:
+                  - name: scripts
+                    configMap:
+                      name: sink-script
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: sink
+            namespace: project
+          spec:
+            selector:
+              app: sink
+            ports:
+              - port: 80
+                targetPort: 80
+          EOF
+          kubectl -n project rollout status deployment/sink --timeout=120s
+
+      - name: Assert broadcaster sends exactly one message per todo (6 replicas)
+        run: |
+          set -euo pipefail
+
+          # Re-establish port-forward if the previous step's was torn down
+          if ! curl -fsS --max-time 2 "http://localhost:${GATEWAY_PORT}/pingpong" >/dev/null 2>&1; then
+            ENVOY_SVC=$(kubectl -n envoy-gateway-system get svc \
+              -l gateway.envoyproxy.io/owning-gateway-name=exercises-gateway \
+              -o jsonpath='{.items[0].metadata.name}')
+            pkill -f "kubectl.*port-forward.*${ENVOY_SVC}" 2>/dev/null || true
+            sleep 1
+            nohup kubectl -n envoy-gateway-system port-forward svc/"${ENVOY_SVC}" "${GATEWAY_PORT}:80" \
+              >/tmp/envoy-test-pf.log 2>&1 &
+            for i in $(seq 1 20); do
+              curl -fsS --max-time 2 "http://localhost:${GATEWAY_PORT}/pingpong" >/dev/null 2>&1 && break
+              sleep 1
+            done
+          fi
+
+          # Repoint broadcaster at the sink for this test only
+          kubectl -n project create secret generic broadcaster-webhook \
+            --from-literal=url=http://sink.project.svc.cluster.local/ \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n project rollout restart deployment/broadcaster
+          kubectl -n project rollout status deployment/broadcaster --timeout=180s
+
+          # 6 replicas running?
+          running=$(kubectl -n project get pods -l app=broadcaster \
+            -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' | grep -c Running || true)
+          if [ "$running" -ne 6 ]; then
+            echo "::error::expected 6 running broadcaster replicas, got $running"
+            kubectl -n project get pods -l app=broadcaster -o wide || true
+            exit 1
+          fi
+          echo "✅ 6 broadcaster replicas running"
+
+          # Fire 10 todos
+          PREFIX="dup-$(date +%s)"
+          for i in $(seq 1 10); do
+            curl -fsS -X POST --data-urlencode "todo=${PREFIX}-${i}" \
+              "http://localhost:${GATEWAY_PORT}/submit" >/dev/null
+          done
+          echo "▶ fired 10 todos, waiting for webhook delivery..."
+
+          # Wait up to 30s for the sink to receive all 10
+          n=0
+          for i in $(seq 1 30); do
+            n=$(kubectl -n project logs -l app=sink --tail=5000 2>/dev/null | grep -c RECEIVED || true)
+            echo "  attempt $i: ${n}/10 POSTs received"
+            [ "${n:-0}" -eq 10 ] && break
+            sleep 1
+          done
+
+          if [ "${n:-0}" -ne 10 ]; then
+            echo "::error::expected exactly 10 POSTs, got ${n:-0}"
+            echo "── broadcaster pods ──"
+            kubectl -n project get pods -l app=broadcaster -o wide || true
+            echo "── broadcaster logs ──"
+            kubectl -n project logs -l app=broadcaster --tail=50 --prefix || true
+            echo "── sink logs ──"
+            kubectl -n project logs -l app=sink --tail=50 || true
+            exit 1
+          fi
+          echo "::notice::broadcaster delivered exactly 10/10 messages across 6 replicas — no duplicates"
 
       - name: Dump diagnostics on failure
         if: failure()
         run: |
           docker logs floci-gcp --tail 200 || true
-          cat /tmp/envoy-port-forward.log || true
+          cat /tmp/envoy-port-forward.log 2>/dev/null || true
+          cat /tmp/envoy-test-pf.log 2>/dev/null || true
           if [ -f "$HOME/.kube/config" ]; then
             kubectl get pods -A || true
             kubectl -n exercises describe pods || true
             kubectl -n project describe pods || true
-            kubectl -n project logs -l job-name --tail=50 --prefix || true
+            kubectl -n project logs -l app=broadcaster --tail=50 --prefix || true
+            kubectl -n project logs -l app=sink        --tail=50          || true
+            kubectl -n project logs -l job-name       --tail=50 --prefix || true
           fi
