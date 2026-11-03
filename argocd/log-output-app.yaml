@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: log-output
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # __GITOPS_REPO_URL__ and __GITOPS_REVISION__ are substituted by deploy-gke.sh
+    repoURL: '__GITOPS_REPO_URL__'
+    targetRevision: '__GITOPS_REVISION__'
+    path: gitops/log-output
+  destination:
+    server: 'https://kubernetes.default.svc'
+    namespace: exercises
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true

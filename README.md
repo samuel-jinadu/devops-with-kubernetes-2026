@@ -42,6 +42,7 @@
 - [Exercise 4.4](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.4)
 - [Exercise 4.5](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.5)
 - [Exercise 4.6](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.6)
+- [Exercise 4.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.7)
 
 ## Notes
 - Deploy: `./deploy-gke.sh`

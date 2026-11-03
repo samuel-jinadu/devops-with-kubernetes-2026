@@ -84,13 +84,15 @@ jobs:
           VER=$(curl -s https://api.github.com/repos/getsops/sops/releases/latest | grep tag_name | cut -d'"' -f4)
           curl -sL "https://github.com/getsops/sops/releases/download/${VER}/sops_${VER#v}_amd64.deb" -o /tmp/sops.deb
           sudo dpkg -i /tmp/sops.deb
-
+      
       - name: Deploy
         if: steps.gcp.outputs.skip == 'false'
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
           TARGET_NS:    ${{ steps.target.outputs.ns }}
           TARGET_TAG:   ${{ steps.target.outputs.tag }}
+          GITOPS_REPO_URL: https://github.com/${{ github.repository }}.git
+          GITOPS_REVISION: ${{ github.event.workflow_run.head_branch || 'main' }}
         run: |
           chmod +x deploy-gke.sh
           ./deploy-gke.sh

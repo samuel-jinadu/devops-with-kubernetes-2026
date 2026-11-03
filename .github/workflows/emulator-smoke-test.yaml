@@ -107,6 +107,8 @@ jobs:
       - name: Run deploy-gke.sh against emulator
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          GITOPS_REPO_URL: https://github.com/${{ github.repository }}.git
+          GITOPS_REVISION: ${{ github.event.workflow_run.head_branch || 'main' }}
         run: |
           chmod +x deploy-gke.sh
           ./deploy-gke.sh

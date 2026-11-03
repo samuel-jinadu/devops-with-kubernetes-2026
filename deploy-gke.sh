@@ -249,9 +249,6 @@ kubectl apply -f gke-manifests/ping-pong-canary.yaml
 kubectl -n exercises wait --for=condition=Available \
   rollout/pingpong-rollout --timeout=300s
 
-kubectl apply -f log-output/gke-manifests
-echo "▶ waiting for log-output…"
-kubectl -n exercises rollout status deployment/hashgenerator-dep --timeout=120s
 
 # ─── 7b. NATS ────────────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading NATS..."
@@ -265,6 +262,25 @@ helm upgrade --install nats nats/nats \
 
 # Wait for the StatefulSet (chart creates one)
 kubectl -n exercises rollout status statefulset/nats --timeout=180s
+
+# ─── 7c. Argo CD (GitOps for log-output) ──────────────────────────────────────
+echo "▶ Installing/upgrading Argo CD..."
+helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
+helm repo update argo
+
+helm upgrade --install argocd argo/argo-cd \
+  --namespace argocd --create-namespace \
+  --set controller.replicas=1 \
+  --set server.replicas=1 \
+  --set repoServer.replicas=1 \
+  --set applicationSet.replicas=0 \
+  --set notifications.enabled=false \
+  --set dex.enabled=false \
+  --wait --timeout 10m
+
+echo "▶ waiting for Argo CD components…"
+kubectl -n argocd rollout status deployment/argocd-server      --timeout=300s
+kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
 
 # ─── 8. Project app → TARGET_NS with TARGET_TAG and per-branch URL prefixes ───
 APP_TMP=$(mktemp -d)
@@ -389,6 +405,43 @@ fi
 kubectl apply -k broadcaster/manifests
 echo "▶ waiting for broadcaster (6 replicas)…"
 kubectl -n project rollout status deployment/broadcaster --timeout=180s
+
+# ─── 10. Argo CD Application (GitOps for log-output) ─────────────────────────
+# Determine the Git repo Argo CD should watch. When run in CI, use the actual
+# repo (works for forks). When run locally, default to the origin.
+GITOPS_REPO_URL="${GITOPS_REPO_URL:-}"
+GITOPS_REVISION="${GITOPS_REVISION:-main}"
+if [ -z "${GITOPS_REPO_URL}" ]; then
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    GITOPS_REPO_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+  else
+    GITOPS_REPO_URL="https://github.com/samuel-jinadu/devops-with-kubernetes-2026.git"
+  fi
+fi
+
+echo "▶ Creating Argo CD Application log-output (repo=${GITOPS_REPO_URL}, rev=${GITOPS_REVISION})"
+sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
+    -e "s|__GITOPS_REVISION__|${GITOPS_REVISION}|g" \
+    argocd/log-output-app.yaml | kubectl apply -f -
+
+echo "▶ waiting for Argo CD to sync log-output…"
+for i in $(seq 1 60); do
+  synced=$(kubectl -n argocd get application log-output \
+             -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
+  health=$(kubectl -n argocd get application log-output \
+             -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+  if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
+    echo "  ✅ Argo CD synced log-output: ${synced}/${health}"
+    break
+  fi
+  echo "  Argo status: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
+  sleep 5
+  if [ "$i" -eq 60 ]; then
+    echo "❌ Argo CD did not converge within 5 minutes."
+    kubectl -n argocd get application log-output -o yaml | tail -80
+    exit 1
+  fi
+done
 
 # ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"
