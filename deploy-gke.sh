@@ -217,17 +217,29 @@ data:
 '
 sleep 3
 
-# ─── 8. Branch-only direct deploy ─────────────────────────────────────────────
-if [ "$TARGET_NS" = "staging" ] || [ "$TARGET_NS" = "production" ]; then
+# ─── 8. Direct deploy (branches, or when FORCE_DIRECT_APPLY=1) ────────────────
+should_direct_apply=0
+if [ "${FORCE_DIRECT_APPLY:-0}" = "1" ]; then
+  should_direct_apply=1
+elif [ "$TARGET_NS" != "staging" ] && [ "$TARGET_NS" != "production" ]; then
+  should_direct_apply=1
+fi
+
+if [ "$should_direct_apply" = "0" ]; then
   echo "▶ $TARGET_NS is managed by Argo CD — skipping direct apply (see §9)."
+elif [ "$TARGET_NS" = "staging" ] || [ "$TARGET_NS" = "production" ]; then
+  echo "▶ FORCE_DIRECT_APPLY=1 — applying gitops/$TARGET_NS directly into $TARGET_NS"
+  kubectl apply -k "gitops/$TARGET_NS"
+  kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --timeout=120s
+  kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment     --timeout=120s
+  kubectl -n "$TARGET_NS" rollout status deployment/broadcaster             --timeout=180s
 else
   echo "▶ Branch deploy: applying gitops/base/ directly into $TARGET_NS"
   APP_TMP=$(mktemp -d)
   cp -r gitops/base/todo-backend "$APP_TMP/"
   cp -r gitops/base/todo-app     "$APP_TMP/"
 
-  {
-    cat <<EOF
+  cat > "$APP_TMP/kustomization.yaml" <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: ${TARGET_NS}
@@ -240,16 +252,14 @@ resources:
   - ./todo-backend
   - ./todo-app
 EOF
-  } > "$APP_TMP/kustomization.yaml"
 
   kubectl apply -k "$APP_TMP"
   rm -rf "$APP_TMP"
 
-  # gen-todo CronJob (log-only broadcaster for the branch, harmless default)
   sed -e "s|namespace: project|namespace: ${TARGET_NS}|" \
       -e "s|image: ghcr.io/samuel-jinadu/broadcaster:main|image: ghcr.io/samuel-jinadu/broadcaster:${TARGET_TAG}|" \
       gitops/base/broadcaster/deployment.yaml | kubectl apply -f -
-  sed -e "s|namespace: project|namespace: ${TARGET_NS}|" \
+  sed "s|namespace: project|namespace: ${TARGET_NS}|" \
       gitops/base/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
 
   kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --timeout=120s
@@ -268,55 +278,53 @@ if [ -z "${GITOPS_REPO_URL}" ]; then
   fi
 fi
 
-# Cleanup: 4.8's monolithic `project` Application no longer applies. Its
-# resources-finalizer will cascade-delete resources in the (now stale) project namespace.
-kubectl -n argocd delete application project --ignore-not-found 2>/dev/null || true
+if [ "${FORCE_DIRECT_APPLY:-0}" = "1" ]; then
+  echo "▶ FORCE_DIRECT_APPLY=1 — skipping Argo CD Application updates"
+else
+  kubectl -n argocd delete application project --ignore-not-found 2>/dev/null || true
 
-# log-output (exercise 4.7) — unchanged, tracks main (or GITOPS_REVISION)
-echo "▶ Application log-output (rev=${GITOPS_REVISION})"
-sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
-    -e "s|__GITOPS_REVISION__|${GITOPS_REVISION}|g" \
-    argocd/log-output-app.yaml | kubectl apply -f -
-
-# staging App — always exists, always tracks main
-echo "▶ Application project-staging (tracks main)"
-sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
-    argocd/staging-app.yaml | kubectl apply -f -
-
-# production App — only updated when we're deploying a real tag
-if [ "$TARGET_NS" = "production" ] && [ "$TARGET_TAG" != "main" ]; then
-  echo "▶ Application project-production (tracks tag ${TARGET_TAG})"
+  echo "▶ Application log-output (rev=${GITOPS_REVISION})"
   sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
-      -e "s|__PRODUCTION_TAG__|${TARGET_TAG}|g" \
-      argocd/production-app.yaml | kubectl apply -f -
-elif ! kubectl -n argocd get application project-production >/dev/null 2>&1; then
-  echo "▶ production Application not yet created (will be created on first tag push)"
-fi
+      -e "s|__GITOPS_REVISION__|${GITOPS_REVISION}|g" \
+      argocd/log-output-app.yaml | kubectl apply -f -
 
-# Wait for whatever Applications we know should be synced
-APPS_TO_WAIT="log-output project-staging"
-if kubectl -n argocd get application project-production >/dev/null 2>&1; then
-  APPS_TO_WAIT="$APPS_TO_WAIT project-production"
-fi
+  echo "▶ Application project-staging (tracks main)"
+  sed "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
+      argocd/staging-app.yaml | kubectl apply -f -
 
-echo "▶ waiting for Argo CD to converge: $APPS_TO_WAIT"
-for app in $APPS_TO_WAIT; do
-  for i in $(seq 1 60); do
-    synced=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
-    health=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.health.status}' 2>/dev/null || true)
-    if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
-      echo "  ✅ $app: ${synced}/${health}"
-      break
-    fi
-    echo "  $app: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
-    sleep 5
-    if [ "$i" -eq 60 ]; then
-      echo "❌ $app did not converge. Dumping status:"
-      kubectl -n argocd get application "$app" -o yaml | tail -80
-      exit 1
-    fi
+  if [ "$TARGET_NS" = "production" ] && [ "$TARGET_TAG" != "main" ]; then
+    echo "▶ Application project-production (tracks tag ${TARGET_TAG})"
+    sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
+        -e "s|__PRODUCTION_TAG__|${TARGET_TAG}|g" \
+        argocd/production-app.yaml | kubectl apply -f -
+  elif ! kubectl -n argocd get application project-production >/dev/null 2>&1; then
+    echo "▶ production Application not yet created (will be created on first tag push)"
+  fi
+
+  APPS_TO_WAIT="log-output project-staging"
+  if kubectl -n argocd get application project-production >/dev/null 2>&1; then
+    APPS_TO_WAIT="$APPS_TO_WAIT project-production"
+  fi
+
+  echo "▶ waiting for Argo CD to converge: $APPS_TO_WAIT"
+  for app in $APPS_TO_WAIT; do
+    for i in $(seq 1 60); do
+      synced=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
+      health=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+      if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
+        echo "  ✅ $app: ${synced}/${health}"
+        break
+      fi
+      echo "  $app: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
+      sleep 5
+      if [ "$i" -eq 60 ]; then
+        echo "❌ $app did not converge. Dumping status:"
+        kubectl -n argocd get application "$app" -o yaml | tail -80
+        exit 1
+      fi
+    done
   done
-done
+fi
 
 # ─── 10. Wait for Gateway data plane ──────────────────────────────────────────
 GATEWAY_NAME="exercises-gateway"; NS="exercises"
