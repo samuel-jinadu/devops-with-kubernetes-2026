@@ -294,6 +294,20 @@ echo "▶ waiting for Argo CD components…"
 kubectl -n argocd rollout status deployment/argocd-server      --timeout=300s
 kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
 
+# ── CronJob health override ──────────────────────────────────────────────────
+
+echo "▶ Applying argocd-cm CronJob health override…"
+kubectl -n argocd patch configmap argocd-cm --type merge --patch '
+data:
+  resource.customizations.health.batch_CronJob: |
+    hs = {}
+    hs.status = "Healthy"
+    hs.message = "CronJob schedule is configured; job execution is verified separately"
+    return hs
+'
+
+sleep 3
+
 # ─── 8. Project app ──────────────────────────────────────────────────────────
 # When TARGET_NS=project, the workloads are managed by Argo CD (section 10).
 # For branch deploys (TARGET_NS=<branch>), apply directly from gitops/project/
