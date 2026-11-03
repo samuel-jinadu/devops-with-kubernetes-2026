@@ -282,10 +282,20 @@ jobs:
           kubectl -n project rollout status deployment/broadcaster --timeout=180s
 
           # 6 replicas running?
-          running=$(kubectl -n project get pods -l app=broadcaster \
-            -o jsonpath='{range .items[*]}{.status.phase}{"\n"}{end}' | grep -c Running || true)
-          if [ "$running" -ne 6 ]; then
-            echo "::error::expected 6 running broadcaster replicas, got $running"
+          # NOTE: after the restart above, the old ReplicaSet's pods linger in
+          # "Terminating" while .status.phase is still "Running". Counting
+          # .status.phase therefore yields 7 instead of 6. Count the
+          # human-visible STATUS column (and require Ready) instead, and
+          # poll briefly so the old ReplicaSet is fully gone.
+          running=0
+          for i in $(seq 1 30); do
+            running=$(kubectl -n project get pods -l app=broadcaster --no-headers 2>/dev/null \
+              | awk '$2=="1/1" && $3=="Running"{c++} END{print c+0}' || true)
+            [ "${running:-0}" -eq 6 ] && break
+            sleep 1
+          done
+          if [ "${running:-0}" -ne 6 ]; then
+            echo "::error::expected 6 running broadcaster replicas, got ${running:-0}"
             kubectl -n project get pods -l app=broadcaster -o wide || true
             exit 1
           fi
