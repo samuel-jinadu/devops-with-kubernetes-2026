@@ -24,3 +24,4 @@ spec:
                 secretKeyRef:
                   name: broadcaster-webhook
                   key: url
+                  optional: true          # <-- NEW

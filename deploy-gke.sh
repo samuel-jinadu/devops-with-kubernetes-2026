@@ -2,25 +2,25 @@
 set -euo pipefail
 
 # ─── 0. Deployment target ─────────────────────────────────────────────────────
-# TARGET_NS:  namespace for the project app (defaults to "project" = main).
-#             When TARGET_NS=project, the project is managed by Argo CD;
-#             when TARGET_NS=<branch>, the branch is applied directly (kubectl).
-# TARGET_TAG: image tag for todo-backend/todo-app (defaults to "main")
-TARGET_NS="${TARGET_NS:-project}"
+# TARGET_NS:  staging | production | <feature-branch>
+# TARGET_TAG: main | vX.Y.Z | <feature-branch>
+#
+#   main branch push   → staging / main       (Argo CD owns the workload)
+#   tag push (v*..)    → production / <tag>   (Argo CD owns the workload)
+#   feature branch     → <branch> / <branch>  (direct kubectl, ephemeral)
+TARGET_NS="${TARGET_NS:-staging}"
 TARGET_TAG="${TARGET_TAG:-main}"
 BACKUP_BUCKET="${BACKUP_BUCKET:-todo-backups-$(gcloud config get-value project 2>/dev/null || echo dwk)}"
 
-# Optional override for the emulator GCS endpoint.
-# If unset, deploy-gke.sh auto-detects (host.docker.internal → floci-gcp IP → 172.17.0.1).
 STORAGE_EMULATOR_HOST="${STORAGE_EMULATOR_HOST:-}"
 
-# Guardrails — reject obvious mistakes early
+# Guardrails
 if ! [[ "$TARGET_NS" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-  echo "❌ Invalid namespace: '$TARGET_NS' (must match ^[a-z0-9]([-a-z0-9]*[a-z0-9])?\$)"
+  echo "❌ Invalid namespace: '$TARGET_NS'"
   exit 1
 fi
 case "$TARGET_NS" in
-  exercises|default|kube-system|kube-public|kube-node-lease|envoy-gateway-system|monitoring)
+  exercises|default|kube-system|kube-public|kube-node-lease|envoy-gateway-system|monitoring|argocd|argo-rollouts)
     echo "❌ Refusing to deploy into reserved namespace '$TARGET_NS'"
     exit 1
     ;;
@@ -28,45 +28,23 @@ esac
 
 echo "▶ Target namespace: $TARGET_NS (image tag: $TARGET_TAG)"
 
-# ─── Helper: best-effort detection of the emulator's reachable address ────────
-# Used only when GATEWAY_CLASS == "eg" (emulator mode).
+# ─── Helper: emulator host detection ──────────────────────────────────────────
 detect_emulator_host() {
-  # 1. Explicit override wins.
   if [ -n "${STORAGE_EMULATOR_HOST}" ]; then
-    local h="${STORAGE_EMULATOR_HOST#http://}"
-    h="${h#https://}"
-    h="${h%%:*}"
-    echo "$h"
-    return
+    local h="${STORAGE_EMULATOR_HOST#http://}"; h="${h#https://}"; h="${h%%:*}"
+    echo "$h"; return
   fi
-
-  # 2. host.docker.internal (works when Docker sets it up).
-  if getent hosts host.docker.internal >/dev/null 2>&1; then
-    echo "host.docker.internal"
-    return
-  fi
-
-  # 3. floci-gcp container's IP on its Docker network.
+  if getent hosts host.docker.internal >/dev/null 2>&1; then echo "host.docker.internal"; return; fi
   local ip
-  ip=$(docker inspect \
-        -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}} {{end}}{{end}}' \
-        floci-gcp 2>/dev/null | awk '{print $1}')
-  if [ -n "$ip" ]; then
-    echo "$ip"
-    return
-  fi
-
-  # 4. Default Docker bridge gateway.
+  ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{if .IPAddress}}{{.IPAddress}} {{end}}{{end}}' floci-gcp 2>/dev/null | awk '{print $1}')
+  if [ -n "$ip" ]; then echo "$ip"; return; fi
   echo "172.17.0.1"
 }
 
 # ─── 1. Cluster ───────────────────────────────────────────────────────────────
 if ! gcloud container clusters describe dwk-cluster --zone=europe-north1-b >/dev/null 2>&1; then
   gcloud container clusters create dwk-cluster \
-    --zone=europe-north1-b \
-    --num-nodes=2 \
-    --machine-type=e2-small \
-    --gateway-api=standard
+    --zone=europe-north1-b --num-nodes=2 --machine-type=e2-small --gateway-api=standard
 else
   echo "▶ dwk-cluster already exists; skipping creation."
 fi
@@ -81,9 +59,7 @@ gcloud container clusters get-credentials dwk-cluster --zone=europe-north1-b
 
 echo "▶ waiting for nodes to register..."
 for i in $(seq 1 30); do
-  if kubectl get nodes 2>/dev/null | grep -q " Ready"; then
-    break
-  fi
+  kubectl get nodes 2>/dev/null | grep -q " Ready" && break
   sleep 2
 done
 kubectl wait --for=condition=Ready nodes --all --timeout=180s
@@ -92,24 +68,20 @@ kubectl wait --for=condition=Ready nodes --all --timeout=180s
 kubectl apply -f manifests/namespaces
 kubectl create namespace "$TARGET_NS" --dry-run=client -o yaml | kubectl apply -f -
 
-# ─── 3. Decide which GatewayClass to use (real GKE vs emulator) ───────────────
+# ─── 3. GatewayClass (real GKE vs emulator) ───────────────────────────────────
 GATEWAY_CLASS=""
 if kubectl get gatewayclass gke-l7-global-external-managed &>/dev/null; then
-  echo "▶ Real GKE detected; using GKE-managed GatewayClass."
+  echo "▶ Real GKE detected."
   GATEWAY_CLASS="gke-l7-global-external-managed"
 else
-  echo "▶ GKE GatewayClass not found; assuming emulator; installing Envoy Gateway..."
+  echo "▶ Emulator detected; installing Envoy Gateway..."
 
   kubectl apply --server-side -f \
     https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
 
   helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
-    --version v1.5.4 \
-    --skip-crds \
-    -n envoy-gateway-system --create-namespace
-
-  kubectl wait --for=condition=Available deployment/envoy-gateway \
-    -n envoy-gateway-system --timeout=300s
+    --version v1.5.4 --skip-crds -n envoy-gateway-system --create-namespace
+  kubectl wait --for=condition=Available deployment/envoy-gateway -n envoy-gateway-system --timeout=300s
 
   kubectl apply -f - <<'EOF'
 apiVersion: gateway.networking.k8s.io/v1
@@ -119,115 +91,80 @@ metadata:
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
 EOF
-
   kubectl wait --for=condition=Accepted gatewayclass/eg --timeout=120s
-
   GATEWAY_CLASS="eg"
 fi
 
-# ─── 4. Gateway (patched on the fly) ──────────────────────────────────────────
+# ─── 4. Gateway ───────────────────────────────────────────────────────────────
 sed "s|gatewayClassName: .*|gatewayClassName: ${GATEWAY_CLASS}|" \
   gke-manifests/gateway.yaml | kubectl apply -f -
 
-# ─── 5. Secrets (decrypted from sops) ─────────────────────────────────────────
-# Secrets are ALWAYS applied by deploy-gke.sh (never by Argo CD) so they exist
-# before workloads sync. Argo owns the workloads; deploy-gke owns the secrets.
-sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
-sops --decrypt postgres/postgres-credentials-project.enc.yaml \
-  | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
-  | kubectl apply -f -
-sops --decrypt broadcaster/manifests/broadcaster-credentials.enc.yaml \
-  | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
-  | kubectl apply -f -
+# ─── 5. Secrets (applied OUTSIDE Argo CD) ─────────────────────────────────────
+# postgres-credentials: staging AND production both need these
+if [ "$TARGET_NS" = "staging" ] || [ "$TARGET_NS" = "production" ]; then
+  sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
+  sops --decrypt postgres/postgres-credentials-project.enc.yaml \
+    | sed "s|namespace: project|namespace: ${TARGET_NS}|" \
+    | kubectl apply -f -
+fi
 
-# ─── 5b. Storage SA secret + GCS bucket + backup-config ConfigMap ────────────
-if [ "$TARGET_NS" = "project" ]; then
+# Production-only secrets + config: broadcaster-webhook, storage-sa-key, backup-config
+if [ "$TARGET_NS" = "production" ]; then
+  sops --decrypt broadcaster/manifests/broadcaster-credentials.enc.yaml \
+    | sed "s|namespace: project|namespace: production|" \
+    | kubectl apply -f -
+
   if [ -f key.json ]; then
-    echo "▶ Creating storage-sa-key secret from key.json"
     kubectl create secret generic storage-sa-key \
-      --from-file=key.json=key.json \
-      --namespace=project \
+      --from-file=key.json=key.json -n production \
       --dry-run=client -o yaml | kubectl apply -f -
-  elif ! kubectl -n project get secret storage-sa-key >/dev/null 2>&1; then
-    echo "⚠️  WARNING: 'storage-sa-key' secret is missing in project namespace."
-    echo "    The backup CronJob will fail until you create it manually with:"
-    echo "    kubectl create secret generic storage-sa-key --from-file=key.json=key.json -n project"
   fi
 
   if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-    # ── Real GKE: create bucket via gsutil (idempotent) ──
     if ! gsutil ls -b "gs://${BACKUP_BUCKET}" >/dev/null 2>&1; then
       echo "▶ Creating GCS bucket gs://${BACKUP_BUCKET}"
       gsutil mb -l europe-north1 "gs://${BACKUP_BUCKET}"
     fi
-  else
-    # ── Emulator: create bucket via the GCS JSON API ──
-    if curl -fsS "http://localhost:4588/storage/v1/b/${BACKUP_BUCKET}" >/dev/null 2>&1; then
-      echo "▶ Emulator bucket gs://${BACKUP_BUCKET} already exists"
-    else
-      echo "▶ Creating emulator bucket gs://${BACKUP_BUCKET}"
-      if curl -fsS -X POST "http://localhost:4588/storage/v1/b?project=floci-local" \
-           -H "Content-Type: application/json" \
-           -d "{\"name\": \"${BACKUP_BUCKET}\"}" >/dev/null 2>&1; then
-        echo "  ✅ Bucket created in emulator"
-      else
-        echo "  ⚠️  Could not create bucket in emulator; CronJob may fail on upload"
-      fi
-    fi
-  fi
-
-  # ── backup-config ConfigMap: env-specific values for the gitops-owned backup
-  #    CronJob (envFrom: backup-config). Argo cannot sed placeholders at apply
-  #    time, so the environment-specific bits are pushed by deploy-gke.sh here.
-  if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-    echo "▶ Creating backup-config ConfigMap (real GKE)"
-    kubectl -n project create configmap backup-config \
+    kubectl -n production create configmap backup-config \
       --from-literal=BACKUP_BUCKET="${BACKUP_BUCKET}" \
       --dry-run=client -o yaml | kubectl apply -f -
   else
+    if ! curl -fsS "http://localhost:4588/storage/v1/b/${BACKUP_BUCKET}" >/dev/null 2>&1; then
+      curl -fsS -X POST "http://localhost:4588/storage/v1/b?project=floci-local" \
+           -H "Content-Type: application/json" \
+           -d "{\"name\": \"${BACKUP_BUCKET}\"}" >/dev/null 2>&1 || true
+    fi
     EMULATOR_HOST=$(detect_emulator_host)
-    echo "▶ Creating backup-config ConfigMap (emulator, STORAGE_EMULATOR_HOST=http://${EMULATOR_HOST}:4588)"
-    kubectl -n project create configmap backup-config \
+    kubectl -n production create configmap backup-config \
       --from-literal=BACKUP_BUCKET="${BACKUP_BUCKET}" \
       --from-literal=STORAGE_EMULATOR_HOST="http://${EMULATOR_HOST}:4588" \
       --dry-run=client -o yaml | kubectl apply -f -
   fi
 fi
 
-# ─── 6. Postgres (shared, always in exercises) ────────────────────────────────
+# ─── 6. Postgres (shared) ─────────────────────────────────────────────────────
 kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
 kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
 
-# ─── 8b. Monitoring Stack (Prometheus) + Argo Rollouts ───────────────────────
+# ─── 7. Monitoring + Argo Rollouts ────────────────────────────────────────────
 echo "▶ Installing/upgrading Prometheus stack..."
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
-
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+helm repo update >/dev/null
 helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
-  -f helm/monitoring-values.yaml \
-  --wait --timeout 10m
+  -f helm/monitoring-values.yaml --wait --timeout 10m
 
-echo "✅ Monitoring stack is ready."
+echo "✅ Monitoring stack ready."
 
-# Install the Argo Rollouts controller
 kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
-# Large CRDs need server-side apply — client-side apply stores the whole
-# manifest in an annotation that exceeds 256 KiB and gets rejected.
 kubectl apply --server-side --force-conflicts \
   -n argo-rollouts \
   -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
 kubectl apply -f gke-manifests/argo-rollouts-gatewayapi-rbac.yaml
 
-# Install the Gateway API traffic router plugin
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64)  PLUGIN_ARCH="amd64" ;;
-  aarch64|arm64) PLUGIN_ARCH="arm64" ;;
-esac
+ARCH=$(uname -m); case "$ARCH" in x86_64) PLUGIN_ARCH="amd64" ;; aarch64|arm64) PLUGIN_ARCH="arm64" ;; esac
 PLUGIN_URL="https://github.com/argoproj-labs/rollouts-plugin-trafficrouter-gatewayapi/releases/download/v0.4.0/gatewayapi-plugin-linux-${PLUGIN_ARCH}"
-
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -239,64 +176,37 @@ data:
     - name: "argoproj-labs/gatewayAPI"
       location: "${PLUGIN_URL}"
 EOF
-
 kubectl -n argo-rollouts rollout restart deployment argo-rollouts
-echo "▶ waiting for Argo Rollouts controller…"
 kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
 
-# Confirm the plugin is loaded
-kubectl -n argo-rollouts logs deploy/argo-rollouts | grep -i "gatewayapi" || true
-
-
-# ─── 7. Shared infra (exercises namespace) ────────────────────────────────────
-# HTTPRoute first — the Rollout will modify its weights, so it must exist
+# ─── 7b. Shared infra ─────────────────────────────────────────────────────────
 kubectl apply -f ping-pong/gke-manifests/httproute.yaml
-
-# AnalysisTemplate (Argo CRDs are installed by the section above)
 kubectl apply -f ping-pong/gke-manifests/pingpong-cpu-analysis.yaml
-
-# Canary Services + Rollout
 kubectl apply -f gke-manifests/ping-pong-canary.yaml
+kubectl -n exercises wait --for=condition=Available rollout/pingpong-rollout --timeout=300s
 
-# Wait for the Rollout to be Available
-kubectl -n exercises wait --for=condition=Available \
-  rollout/pingpong-rollout --timeout=300s
-
-
-# ─── 7b. NATS ────────────────────────────────────────────────────────────────
+# ─── 7c. NATS ─────────────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading NATS..."
-helm repo add nats https://nats-io.github.io/k8s/helm/charts/ 2>/dev/null || true
-helm repo update nats
-
-helm upgrade --install nats nats/nats \
-  --namespace exercises --create-namespace \
-  --set config.jetstream.enabled=false \
-  --wait --timeout 5m
-
+helm repo add nats https://nats-io.github.io/k8s/helm/charts/ >/dev/null 2>&1 || true
+helm repo update nats >/dev/null
+helm upgrade --install nats nats/nats --namespace exercises --create-namespace \
+  --set config.jetstream.enabled=false --wait --timeout 5m
 kubectl -n exercises rollout status statefulset/nats --timeout=180s
 
-# ─── 7c. Argo CD (GitOps for log-output + project) ───────────────────────────
+# ─── 7d. Argo CD ──────────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading Argo CD..."
-helm repo add argo https://argoproj.github.io/argo-helm 2>/dev/null || true
-helm repo update argo
-
+helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
+helm repo update argo >/dev/null
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd --create-namespace \
-  --set controller.replicas=1 \
-  --set server.replicas=1 \
-  --set repoServer.replicas=1 \
-  --set applicationSet.replicas=0 \
-  --set notifications.enabled=false \
-  --set dex.enabled=false \
+  --set controller.replicas=1 --set server.replicas=1 \
+  --set repoServer.replicas=1 --set applicationSet.replicas=0 \
+  --set notifications.enabled=false --set dex.enabled=false \
   --wait --timeout 10m
-
-echo "▶ waiting for Argo CD components…"
-kubectl -n argocd rollout status deployment/argocd-server      --timeout=300s
+kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
 kubectl -n argocd rollout status deployment/argocd-repo-server --timeout=300s
 
-# ── CronJob health override ──────────────────────────────────────────────────
-
-echo "▶ Applying argocd-cm CronJob health override…"
+# CronJob health override (CronJobs report Progressing forever otherwise)
 kubectl -n argocd patch configmap argocd-cm --type merge --patch '
 data:
   resource.customizations.health.batch_CronJob: |
@@ -305,21 +215,16 @@ data:
     hs.message = "CronJob schedule is configured; job execution is verified separately"
     return hs
 '
-
 sleep 3
 
-# ─── 8. Project app ──────────────────────────────────────────────────────────
-# When TARGET_NS=project, the workloads are managed by Argo CD (section 10).
-# For branch deploys (TARGET_NS=<branch>), apply directly from gitops/project/
-# so the branch owner sees their changes immediately. The gitops/ directory is
-# the single source of truth for project manifests since exercise 4.8.
-if [ "$TARGET_NS" = "project" ]; then
-  echo "▶ project namespace is managed by Argo CD — skipping direct apply (see section 10)."
+# ─── 8. Branch-only direct deploy ─────────────────────────────────────────────
+if [ "$TARGET_NS" = "staging" ] || [ "$TARGET_NS" = "production" ]; then
+  echo "▶ $TARGET_NS is managed by Argo CD — skipping direct apply (see §9)."
 else
+  echo "▶ Branch deploy: applying gitops/base/ directly into $TARGET_NS"
   APP_TMP=$(mktemp -d)
-
-  cp -r gitops/project/todo-backend "$APP_TMP/todo-backend-manifests"
-  cp -r gitops/project/todo-app     "$APP_TMP/todo-app-manifests"
+  cp -r gitops/base/todo-backend "$APP_TMP/"
+  cp -r gitops/base/todo-app     "$APP_TMP/"
 
   {
     cat <<EOF
@@ -332,91 +237,27 @@ images:
   - name: ghcr.io/samuel-jinadu/todo-app
     newTag: ${TARGET_TAG}
 resources:
-  - ./todo-backend-manifests
-  - ./todo-app-manifests
-EOF
-
-    cat <<EOF
-patches:
-  - target: { kind: HTTPRoute, name: todo-backend-route }
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/matches/0/path/value
-        value: /${TARGET_NS}/submit
-      - op: replace
-        path: /spec/rules/1/matches/0/path/value
-        value: /${TARGET_NS}/backend
-      - op: add
-        path: /spec/rules/0/filters
-        value:
-          - type: URLRewrite
-            urlRewrite:
-              path: { type: ReplacePrefixMatch, replacePrefixMatch: /submit }
-      - op: add
-        path: /spec/rules/1/filters
-        value:
-          - type: URLRewrite
-            urlRewrite:
-              path: { type: ReplacePrefixMatch, replacePrefixMatch: /backend }
-  - target: { kind: HTTPRoute, name: todo-app-route }
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/matches/0/path/value
-        value: /${TARGET_NS}/
-      - op: add
-        path: /spec/rules/0/filters
-        value:
-          - type: URLRewrite
-            urlRewrite:
-              path: { type: ReplacePrefixMatch, replacePrefixMatch: / }
-  - target: { kind: ConfigMap, name: todo-app-configmap }
-    patch: |-
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: todo-app-configmap
-      data:
-        POSTURL: /${TARGET_NS}/submit
-  - target: { kind: Deployment, name: todo-backend-deployment }
-    patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: todo-backend-deployment
-      spec:
-        template:
-          spec:
-            containers:
-              - name: todo-backend
-                env:
-                  - name: TODOAPP_ROUTE
-                    value: /${TARGET_NS}/
+  - ./todo-backend
+  - ./todo-app
 EOF
   } > "$APP_TMP/kustomization.yaml"
 
   kubectl apply -k "$APP_TMP"
   rm -rf "$APP_TMP"
 
-  echo "▶ waiting for todo-backend in $TARGET_NS…"
+  # gen-todo CronJob (log-only broadcaster for the branch, harmless default)
+  sed -e "s|namespace: project|namespace: ${TARGET_NS}|" \
+      -e "s|image: ghcr.io/samuel-jinadu/broadcaster:main|image: ghcr.io/samuel-jinadu/broadcaster:${TARGET_TAG}|" \
+      gitops/base/broadcaster/deployment.yaml | kubectl apply -f -
+  sed -e "s|namespace: project|namespace: ${TARGET_NS}|" \
+      gitops/base/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
+
   kubectl -n "$TARGET_NS" rollout status deployment/todo-backend-deployment --timeout=120s
-  echo "▶ waiting for todo-app in $TARGET_NS…"
-  kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment --timeout=120s
-
-  # Branch cronjob (gen-todo)
-  sed "s|namespace: project|namespace: ${TARGET_NS}|" \
-    gitops/project/cronjobs/gen-todo-hourly.yaml | kubectl apply -f -
-
-  # Branch broadcaster — the secret is already created in $TARGET_NS by §5.
-  sed "s|namespace: project|namespace: ${TARGET_NS}|" \
-    gitops/project/broadcaster/deployment.yaml | kubectl apply -f -
-  echo "▶ waiting for broadcaster in $TARGET_NS…"
-  kubectl -n "$TARGET_NS" rollout status deployment/broadcaster --timeout=180s
+  kubectl -n "$TARGET_NS" rollout status deployment/todo-app-deployment     --timeout=120s
+  kubectl -n "$TARGET_NS" rollout status deployment/broadcaster             --timeout=180s
 fi
 
-
-# ─── 10. Argo CD Applications (GitOps) ────────────────────────────────────────
-# Determine the Git repo Argo CD should watch. When run in CI, use the actual
-# repo (works for forks). When run locally, default to the origin.
+# ─── 9. Argo CD Applications ──────────────────────────────────────────────────
 GITOPS_REPO_URL="${GITOPS_REPO_URL:-}"
 GITOPS_REVISION="${GITOPS_REVISION:-main}"
 if [ -z "${GITOPS_REPO_URL}" ]; then
@@ -427,25 +268,42 @@ if [ -z "${GITOPS_REPO_URL}" ]; then
   fi
 fi
 
-# log-output Application (exercise 4.7) — tracks GITOPS_REVISION (branch-aware).
-echo "▶ Creating Argo CD Application log-output (repo=${GITOPS_REPO_URL}, rev=${GITOPS_REVISION})"
+# Cleanup: 4.8's monolithic `project` Application no longer applies. Its
+# resources-finalizer will cascade-delete resources in the (now stale) project namespace.
+kubectl -n argocd delete application project --ignore-not-found 2>/dev/null || true
+
+# log-output (exercise 4.7) — unchanged, tracks main (or GITOPS_REVISION)
+echo "▶ Application log-output (rev=${GITOPS_REVISION})"
 sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
     -e "s|__GITOPS_REVISION__|${GITOPS_REVISION}|g" \
     argocd/log-output-app.yaml | kubectl apply -f -
 
-# project Application (exercise 4.8) — always tracks main, regardless of the
-# branch that triggered this deploy. Branches have already been applied above.
-echo "▶ Creating Argo CD Application project (repo=${GITOPS_REPO_URL}, rev=main)"
+# staging App — always exists, always tracks main
+echo "▶ Application project-staging (tracks main)"
 sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
-    argocd/project-app.yaml | kubectl apply -f -
+    argocd/staging-app.yaml | kubectl apply -f -
 
-echo "▶ waiting for Argo CD to sync log-output and project…"
-for app in log-output project; do
+# production App — only updated when we're deploying a real tag
+if [ "$TARGET_NS" = "production" ] && [ "$TARGET_TAG" != "main" ]; then
+  echo "▶ Application project-production (tracks tag ${TARGET_TAG})"
+  sed -e "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" \
+      -e "s|__PRODUCTION_TAG__|${TARGET_TAG}|g" \
+      argocd/production-app.yaml | kubectl apply -f -
+elif ! kubectl -n argocd get application project-production >/dev/null 2>&1; then
+  echo "▶ production Application not yet created (will be created on first tag push)"
+fi
+
+# Wait for whatever Applications we know should be synced
+APPS_TO_WAIT="log-output project-staging"
+if kubectl -n argocd get application project-production >/dev/null 2>&1; then
+  APPS_TO_WAIT="$APPS_TO_WAIT project-production"
+fi
+
+echo "▶ waiting for Argo CD to converge: $APPS_TO_WAIT"
+for app in $APPS_TO_WAIT; do
   for i in $(seq 1 60); do
-    synced=$(kubectl -n argocd get application "$app" \
-               -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
-    health=$(kubectl -n argocd get application "$app" \
-               -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+    synced=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.sync.status}'   2>/dev/null || true)
+    health=$(kubectl -n argocd get application "$app" -o jsonpath='{.status.health.status}' 2>/dev/null || true)
     if [ "$synced" = "Synced" ] && [ "$health" = "Healthy" ]; then
       echo "  ✅ $app: ${synced}/${health}"
       break
@@ -453,122 +311,75 @@ for app in log-output project; do
     echo "  $app: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
     sleep 5
     if [ "$i" -eq 60 ]; then
-      echo "❌ Argo CD application '$app' did not converge within 5 minutes."
+      echo "❌ $app did not converge. Dumping status:"
       kubectl -n argocd get application "$app" -o yaml | tail -80
       exit 1
     fi
   done
 done
 
-
-# ─── 11. Wait for the Gateway data plane ──────────────────────────────────────
-GATEWAY_NAME="exercises-gateway"
-NS="exercises"
+# ─── 10. Wait for Gateway data plane ──────────────────────────────────────────
+GATEWAY_NAME="exercises-gateway"; NS="exercises"
 
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-  echo "▶ Waiting for Gateway to be Programmed (real GKE)..."
-  kubectl wait --for=condition=Programmed gateway/"${GATEWAY_NAME}" \
-    -n "${NS}" --timeout=600s
+  echo "▶ Waiting for Gateway Programmed (real GKE)..."
+  kubectl wait --for=condition=Programmed gateway/"${GATEWAY_NAME}" -n "${NS}" --timeout=600s
 else
-  echo "▶ Waiting for Envoy data plane to appear (emulator)..."
-  ENVOY_SVC=""
-  ENVOY_DEPLOY=""
+  echo "▶ Waiting for Envoy data plane (emulator)..."
+  ENVOY_SVC=""; ENVOY_DEPLOY=""
   for i in $(seq 1 90); do
     ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
       --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NS},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-
     ENVOY_DEPLOY=$(kubectl get deploy -n envoy-gateway-system \
       --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NS},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-
     if [ -n "${ENVOY_SVC}" ] && [ -n "${ENVOY_DEPLOY}" ]; then
-      echo "  Found Envoy service=${ENVOY_SVC} deployment=${ENVOY_DEPLOY}"
-      kubectl -n envoy-gateway-system rollout status \
-        deploy/"${ENVOY_DEPLOY}" --timeout=120s
+      kubectl -n envoy-gateway-system rollout status deploy/"${ENVOY_DEPLOY}" --timeout=120s
       break
     fi
     sleep 2
-    if [ "$i" -eq 90 ]; then
-      echo "❌ Timed out waiting for Envoy data plane."
-      echo "   Hint: kubectl get svc,deploy -n envoy-gateway-system"
-      echo "         kubectl describe gateway ${GATEWAY_NAME} -n ${NS}"
-      exit 1
-    fi
+    [ "$i" -eq 90 ] && { echo "❌ Envoy data plane timed out"; exit 1; }
   done
 fi
 
-# ─── 12. Resolve the Gateway address ──────────────────────────────────────────
-GATEWAY_ADDRESS=""
-PORT_FORWARD_PID=""
+# ─── 11. Gateway address + port-forward (emulator) ────────────────────────────
+GATEWAY_ADDRESS=""; PORT_FORWARD_PID=""
 
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
-  GATEWAY_ADDRESS=$(kubectl get gateway/"${GATEWAY_NAME}" -n "${NS}" \
-    -o jsonpath='{.status.addresses[0].value}')
-
-  if [ -z "${GATEWAY_ADDRESS}" ]; then
-    echo "❌ Gateway address is empty on real GKE."
-    exit 1
-  fi
+  GATEWAY_ADDRESS=$(kubectl get gateway/"${GATEWAY_NAME}" -n "${NS}" -o jsonpath='{.status.addresses[0].value}')
+  [ -z "${GATEWAY_ADDRESS}" ] && { echo "❌ Gateway address empty"; exit 1; }
 else
-  if [ -z "${ENVOY_SVC:-}" ]; then
-    ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
-      --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NS},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
-      -o jsonpath='{.items[0].metadata.name}')
-  fi
-
-  if [ -z "${ENVOY_SVC}" ]; then
-    echo "❌ Could not find Envoy Gateway service for Gateway ${NS}/${GATEWAY_NAME}."
-    echo "   Hint: kubectl get svc -n envoy-gateway-system"
-    exit 1
-  fi
-  echo "  Found Envoy service: ${ENVOY_SVC}"
+  [ -z "${ENVOY_SVC:-}" ] && ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+    --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NS},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
+    -o jsonpath='{.items[0].metadata.name}')
+  [ -z "${ENVOY_SVC}" ] && { echo "❌ Envoy service not found"; exit 1; }
 
   PORT_FORWARD_PORT="${PORT_FORWARD_PORT:-8060}"
-
   pkill -f "kubectl.*port-forward.*${PORT_FORWARD_PORT}" 2>/dev/null || true
   sleep 1
-
-  echo "▶ Starting port-forward on localhost:${PORT_FORWARD_PORT} → svc/${ENVOY_SVC}:80..."
-  kubectl -n envoy-gateway-system port-forward svc/"${ENVOY_SVC}" \
-    ${PORT_FORWARD_PORT}:80 >/tmp/envoy-port-forward.log 2>&1 &
+  kubectl -n envoy-gateway-system port-forward svc/"${ENVOY_SVC}" ${PORT_FORWARD_PORT}:80 \
+    >/tmp/envoy-port-forward.log 2>&1 &
   PORT_FORWARD_PID=$!
-  echo "  port-forward PID: ${PORT_FORWARD_PID}"
-  echo "  log: /tmp/envoy-port-forward.log"
-
   sleep 2
-  if ! kill -0 "${PORT_FORWARD_PID}" 2>/dev/null; then
-    echo "❌ Port-forward died. See /tmp/envoy-port-forward.log"
-    exit 1
-  fi
+  kill -0 "${PORT_FORWARD_PID}" 2>/dev/null || { echo "❌ Port-forward died"; exit 1; }
   GATEWAY_ADDRESS="localhost:${PORT_FORWARD_PORT}"
 fi
 
-# ─── 13. Print URLs ───────────────────────────────────────────────────────────
-if [ "$TARGET_NS" = "project" ]; then
-  APP_PREFIX=""
-else
-  APP_PREFIX="/${TARGET_NS}"
-fi
-
-PINGPONG_URL="http://${GATEWAY_ADDRESS}/pingpong"
-LOG_URL="http://${GATEWAY_ADDRESS}/log"
-TODO_URL="http://${GATEWAY_ADDRESS}${APP_PREFIX}/"
-SUBMIT_URL="http://${GATEWAY_ADDRESS}${APP_PREFIX}/submit"
-BACKEND_URL="http://${GATEWAY_ADDRESS}${APP_PREFIX}/backend"
-
+# ─── 12. URLs ─────────────────────────────────────────────────────────────────
 echo ""
 echo "✅ Gateway address: ${GATEWAY_ADDRESS}"
 echo "   Target namespace: ${TARGET_NS}  (image tag: ${TARGET_TAG})"
-echo "   Ping-pong:   ${PINGPONG_URL}"
-echo "   Log-output:  ${LOG_URL}"
-echo "   Todo app:    ${TODO_URL}"
-echo "   Todo submit: ${SUBMIT_URL}"
-echo "   Todo list:   ${BACKEND_URL}"
-echo ""
-echo "ℹ️  First request may return 5xx for 5–30s while backend health checks converge."
-if [ -n "${PORT_FORWARD_PID}" ]; then
-  echo "ℹ️  Port-forward is running as PID ${PORT_FORWARD_PID}."
-  echo "   Stop it with: kill ${PORT_FORWARD_PID}"
+echo "   Ping-pong:   http://${GATEWAY_ADDRESS}/pingpong"
+echo "   Log-output:  http://${GATEWAY_ADDRESS}/log"
+if [ "$TARGET_NS" = "production" ]; then
+  echo "   Todo app:    http://${GATEWAY_ADDRESS}/"
+  echo "   Todo submit: http://${GATEWAY_ADDRESS}/submit"
+  echo "   Todo list:   http://${GATEWAY_ADDRESS}/backend"
+else
+  echo "   Staging todo-app is internal-only. To reach it:"
+  echo "     kubectl -n staging port-forward svc/todo-app-service-cluster-ip 8080:2345"
+  echo "     then open http://localhost:8080/"
 fi
+[ -n "${PORT_FORWARD_PID}" ] && echo "ℹ️  Port-forward PID ${PORT_FORWARD_PID} (kill ${PORT_FORWARD_PID} to stop)"
 echo ""

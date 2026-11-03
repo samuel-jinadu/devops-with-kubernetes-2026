@@ -20,8 +20,12 @@ type todoEvent struct {
 func main() {
 	natsURL := os.Getenv("NATS_URL")
 	webhookURL := os.Getenv("GENERIC_WEBHOOK_URL")
-	if webhookURL == "" {
-		log.Fatal("GENERIC_WEBHOOK_URL is required")
+	logOnly := os.Getenv("LOG_ONLY") == "true"
+
+	if logOnly {
+		log.Printf("broadcaster running in LOG_ONLY mode (no webhook forwarding)")
+	} else if webhookURL == "" {
+		log.Fatal("GENERIC_WEBHOOK_URL is required unless LOG_ONLY=true")
 	}
 
 	nc, err := nats.Connect(natsURL,
@@ -33,7 +37,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	log.Printf("connected to NATS at %s; queue group=broadcasters", natsURL)
+	log.Printf("connected to NATS at %s; queue group=broadcasters; log_only=%v", natsURL, logOnly)
 
 	// QueueSubscribe is the critical line:
 	// every replica uses the SAME queue group name "broadcasters".
@@ -46,6 +50,11 @@ func main() {
 		}
 		if evt.User == "" {
 			evt.User = "bot"
+		}
+
+		if logOnly {
+			log.Printf("[LOG_ONLY] user=%q message=%q info=%q", evt.User, evt.Message, evt.Info)
+			return
 		}
 
 		body, _ := json.Marshal(evt)

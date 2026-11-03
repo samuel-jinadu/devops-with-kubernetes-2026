@@ -44,15 +44,35 @@
 - [Exercise 4.6](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.6)
 - [Exercise 4.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.7)
 - [Exercise 4.8](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.8)
+- [Exercise 4.9](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.9)
 
 ## Notes
-- Deploy: `./deploy-gke.sh`
-- Port-forward prometheus: `kubectl port-forward svc/prometheus-kube-prometheus-prometheus -n monitoring 9090:9090`
-- Test readiness for logoutput and pingpong: `./test-readiness.sh`      # make sure to run deploy script first
-- Compatibile with true GKE and floci-gcp GKE simulation
-- Extract config for lens: `kubectl config view --minify --raw`
-- Port-forward: `kubectl port-forward pod/my-pod TO_PORT:FROM_PORT` # Note: This command is blocking
-- Sabotaging pods: `kubectl delete pod -l app=todo-app`
+
+### Deployments
+- `./deploy-gke.sh` — defaults to **staging** deploy (matches main-branch CI behaviour)
+- `TARGET_NS=production TARGET_TAG=v1.0.0 ./deploy-gke.sh` — deploy **production** at a specific tag
+- `TARGET_NS=my-branch TARGET_TAG=my-branch ./deploy-gke.sh` — ephemeral feature-branch deploy
+
+### How environments are wired
+- **staging** namespace (tracked by Argo CD from `main`): 
+  - No backup CronJob
+  - Broadcaster logs todos, does NOT forward to webhook
+  - No public HTTPRoutes; use `kubectl -n staging port-forward svc/todo-app-service-cluster-ip 8080:2345`
+- **production** namespace (tracked by Argo CD from the latest tag): 
+  - Backup CronJob active (needs `storage-sa-key` secret + `backup-config` ConfigMap)
+  - Broadcaster forwards to webhook (`broadcaster-webhook` secret)
+  - Public routes on `exercises-gateway` → `/`, `/submit`, `/backend`
+
+### Push → environment mapping
+| Push | Namespace | Argo App | Deployed via |
+|---|---|---|---|
+| commit to `main` | `staging` | `project-staging` (targetRevision: main) | Argo CD |
+| `git tag v1.2.3 && git push origin v1.2.3` | `production` | `project-production` (targetRevision: v1.2.3) | Argo CD |
+| feature branch push | `<branch>` | — | direct kubectl (ephemeral) |
+
+### Secrets (applied by deploy-gke.sh, not Argo CD)
+- staging: `postgres-credentials`
+- production: `postgres-credentials`, `broadcaster-webhook`, `storage-sa-key` + `backup-config` ConfigMap
 
 # Logs Screenshot
 ![Logs Screenshot](logs-screenshot.png)
