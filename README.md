@@ -45,6 +45,7 @@
 - [Exercise 4.7](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.7)
 - [Exercise 4.8](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.8)
 - [Exercise 4.9](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.9)
+- [Exercise 4.10](https://github.com/samuel-jinadu/devops-with-kubernetes-2026/tree/4.10)
 
 ## Notes
 
