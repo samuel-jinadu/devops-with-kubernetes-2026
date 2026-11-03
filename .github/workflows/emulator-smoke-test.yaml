@@ -115,6 +115,7 @@ jobs:
 
       - name: Trigger backup CronJob and verify upload
         run: |
+          set -euo pipefail
           kubectl -n project get cronjob backup-todo-db-cronjob -o yaml || true
           kubectl -n project get secret storage-sa-key || {
             echo "::error::secret storage-sa-key is missing"
@@ -143,8 +144,8 @@ jobs:
             fi
           done
 
-          BUCKET=$(kubectl -n project get cronjob backup-todo-db-cronjob \
-                     -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].env[?(@.name=="BACKUP_BUCKET")].value}')
+          BUCKET=$(kubectl -n project get configmap backup-config \
+                     -o jsonpath='{.data.BACKUP_BUCKET}')
           echo "▶ checking emulator bucket gs://${BUCKET}"
           COUNT=$(curl -fsS "http://localhost:4588/storage/v1/b/${BUCKET}/o" \
                     | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("items",[])))')
@@ -280,7 +281,7 @@ jobs:
           kubectl -n project create secret generic broadcaster-webhook \
             --from-literal=url=http://sink.project.svc.cluster.local/ \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl -n project rollout restart deployment/broadcaster
+          kubectl -n project delete pod -l app=broadcaster
           kubectl -n project rollout status deployment/broadcaster --timeout=180s
 
           # 6 replicas running?
