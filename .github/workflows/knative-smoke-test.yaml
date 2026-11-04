@@ -1,0 +1,208 @@
+name: Knative Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "knative/**"
+      - ".github/workflows/knative-smoke-test.yaml"
+  pull_request:
+    paths:
+      - "knative/**"
+      - ".github/workflows/knative-smoke-test.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: knative-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # k3d maps host 8081 -> loadbalancer:80 (see knative/setup.sh)
+      GATEWAY_PORT: "8081"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          k3d version
+
+      # ── Reuse the local setup script (exercise commands live in one place) ──
+      - name: Install Knative Serving + Kourier + Magic DNS
+        run: |
+          chmod +x knative/setup.sh
+          ./knative/setup.sh
+
+      # ── Assert the components are actually healthy (catches CrashLoopBackOff) ──
+      - name: Assert Knative components are healthy
+        run: |
+          set -euo pipefail
+
+          # Every serving pod must be Ready — this is the check that catches
+          # the CrashLoopBackOff scenario the exercise warns about.
+          kubectl -n knative-serving wait --for=condition=Ready pod --all --timeout=300s
+          kubectl -n kourier-system   wait --for=condition=Ready pod --all --timeout=300s
+
+          # Kourier must be the configured ingress class.
+          class=$(kubectl -n knative-serving get cm config-network -o jsonpath='{.data.ingress-class}')
+          echo "config-network.ingress-class = $class"
+          echo "$class" | grep -q "kourier.ingress.networking.knative.dev" \
+            || { echo "::error::Knative is not using Kourier"; exit 1; }
+
+          kubectl get pods -n knative-serving
+          kubectl get pods -n kourier-system
+
+      # ── Deploy hello-world and check the endpoint ─────────────────────────
+      - name: Deploy hello-world
+        run: |
+          kubectl apply -f knative/hello-world.yaml
+          kubectl wait --for=condition=Ready ksvc/hello --timeout=300s
+          kubectl get ksvc hello
+          kubectl get revisions -l serving.knative.dev/service=hello
+
+      - name: Assert hello returns "Hello World!"
+        run: |
+          set -euo pipefail
+          URL=$(kubectl get ksvc hello -o jsonpath='{.status.url}')
+          HOST=${URL#http://}
+          echo "ksvc url: $URL"
+          echo "Host header: $HOST"
+
+          for i in $(seq 1 60); do
+            if curl -sf -H "Host: $HOST" "http://localhost:${GATEWAY_PORT}" -o /tmp/hello.out; then
+              if grep -q "Hello World!" /tmp/hello.out; then
+                echo "✅ hello returned: $(cat /tmp/hello.out)"
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+
+          echo "❌ hello did not return the expected body"
+          curl -sv -H "Host: $HOST" "http://localhost:${GATEWAY_PORT}" || true
+          exit 1
+
+      # ── Autoscaling: scale to zero, then back up ──────────────────────────
+      - name: Deploy autoscale-go
+        run: |
+          kubectl apply -f knative/autoscale.yaml
+          kubectl wait --for=condition=Ready ksvc/autoscale-go --timeout=300s
+          kubectl get ksvc autoscale-go
+
+      - name: Assert autoscale-go scales to zero and back up
+        run: |
+          set -euo pipefail
+          URL=$(kubectl get ksvc autoscale-go -o jsonpath='{.status.url}')
+          HOST=${URL#http://}
+
+          pod_count() {
+            kubectl get pods -l serving.knative.dev/service=autoscale-go --no-headers 2>/dev/null \
+              | awk '$3=="Running"{c++} END{print c+0}'
+          }
+
+          # 1) Warm the service so a pod exists.
+          curl -sf -H "Host: $HOST" "http://localhost:${GATEWAY_PORT}" >/dev/null || true
+          for i in $(seq 1 30); do
+            [ "$(pod_count)" -gt 0 ] && break
+            sleep 1
+          done
+          echo "pods after warm-up: $(pod_count)"
+          [ "$(pod_count)" -gt 0 ] || { echo "::error::no pod created after warm-up"; exit 1; }
+
+          # 2) Wait for scale-to-zero (Knative default ~90s; give 4 min for CI).
+          echo "⏳ waiting for scale-to-zero…"
+          scaled=0
+          for i in $(seq 1 120); do
+            if [ "$(pod_count)" -eq 0 ]; then
+              echo "✅ scaled to zero after ~$((i*2))s"
+              scaled=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$scaled" -ne 1 ]; then
+            echo "::error::autoscale-go did not scale to zero"
+            kubectl get pods -l serving.knative.dev/service=autoscale-go -o wide || true
+            exit 1
+          fi
+
+          # 3) Traffic brings it back.
+          curl -sf -H "Host: $HOST" "http://localhost:${GATEWAY_PORT}" >/dev/null || true
+          for i in $(seq 1 60); do
+            if [ "$(pod_count)" -gt 0 ]; then
+              echo "✅ scaled back up to $(pod_count) pod(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::autoscale-go did not scale back up"
+          exit 1
+
+      # ── Traffic splitting: 50/50 between hello-00001 and hello-00002 ─────
+      - name: Apply traffic split (creates hello-00002)
+        run: |
+          set -euo pipefail
+          kubectl apply -f knative/traffic-split.yaml
+          kubectl wait --for=condition=Ready ksvc/hello --timeout=300s
+
+          kubectl get revisions -l serving.knative.dev/service=hello
+          count=$(kubectl get revisions -l serving.knative.dev/service=hello --no-headers | wc -l)
+          echo "revisions: $count"
+          [ "$count" -ge 2 ] || { echo "::error::expected >=2 revisions"; exit 1; }
+
+      - name: Assert traffic splits across both revisions
+        run: |
+          set -euo pipefail
+          URL=$(kubectl get ksvc hello -o jsonpath='{.status.url}')
+          HOST=${URL#http://}
+
+          world=0; knative=0
+          for i in $(seq 1 20); do
+            body=$(curl -sf -H "Host: $HOST" "http://localhost:${GATEWAY_PORT}" || true)
+            echo "req $i: $body"
+            case "$body" in
+              *"Hello World!"*)    world=$((world+1)) ;;
+              *"Hello Knative!"*)  knative=$((knative+1)) ;;
+            esac
+          done
+
+          echo "World=$world  Knative=$knative (of 20)"
+          [ "$world"   -gt 0 ] || { echo "::error::no requests went to hello-00001"; exit 1; }
+          [ "$knative" -gt 0 ] || { echo "::error::no requests went to hello-00002"; exit 1; }
+          echo "✅ traffic split observed across both revisions"
+
+      # ── Diagnostics on failure ────────────────────────────────────────────
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== knative-serving ==="
+          kubectl -n knative-serving get pods -o wide                || true
+          kubectl -n knative-serving describe pods                  || true
+          kubectl -n knative-serving logs -l app=controller --tail=200 || true
+          kubectl -n knative-serving logs -l app=webhook    --tail=200 || true
+
+          echo "=== kourier-system ==="
+          kubectl -n kourier-system get pods -o wide                || true
+          kubectl -n kourier-system logs -l app=3scale-kourier-control --tail=200 || true
+          kubectl -n kourier-system logs -l app=3scale-kourier-gateway --tail=200 || true
+
+          echo "=== ksvc / revisions / routes ==="
+          kubectl get ksvc       -A -o wide || true
+          kubectl get revisions  -A -o wide || true
+          kubectl get routes     -A -o wide || true
+
+          echo "=== events ==="
+          kubectl get events --sort-by=.lastTimestamp -A || true
+
+      - name: Cleanup
+        if: always()
+        run: k3d cluster delete knative-lab || true
