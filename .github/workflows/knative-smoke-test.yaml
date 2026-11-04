@@ -47,12 +47,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Every serving pod must be Ready — this is the check that catches
-          # the CrashLoopBackOff scenario the exercise warns about.
-          kubectl -n knative-serving wait --for=condition=Ready pod --all --timeout=300s
-          kubectl -n kourier-system   wait --for=condition=Ready pod --all --timeout=300s
+          # Wait only for non-completed pods (default-domain Job is Completed and will never become Ready)
+          kubectl -n knative-serving wait --for=condition=Ready pod \
+            --field-selector=status.phase!=Succeeded \
+            --timeout=300s
+          kubectl -n kourier-system wait --for=condition=Ready pod --all --timeout=300s
 
-          # Kourier must be the configured ingress class.
           class=$(kubectl -n knative-serving get cm config-network -o jsonpath='{.data.ingress-class}')
           echo "config-network.ingress-class = $class"
           echo "$class" | grep -q "kourier.ingress.networking.knative.dev" \
