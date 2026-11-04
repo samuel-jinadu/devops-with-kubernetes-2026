@@ -7,3 +7,6 @@
 [submodule "dwk-project-app"]
 	path = dwk-project-app
 	url = https://github.com/samuel-jinadu/dwk-project-app.git
+[submodule "istio-example"]
+	path = istio-example
+	url = https://github.com/samuel-jinadu/istio-example.git
