@@ -146,17 +146,13 @@ jobs:
           kubectl wait --for=condition=Ready pod -l app=greeter,version=v1 --timeout=120s
           kubectl wait --for=condition=Ready pod -l app=greeter,version=v2 --timeout=120s
           
-          # 3. Deploy a temporary curl pod in the default namespace to test internal routing
-          kubectl run curl-test --image=curlimages/curl:latest --restart=Never -- sleep 3600
-          kubectl wait --for=condition=Ready pod/curl-test --timeout=60s
-          
-          echo "▶ Firing 20 requests to greeter-svc..."
+          echo "▶ Firing 20 requests to the Gateway /greeter route..."
           V1_COUNT=0
           V2_COUNT=0
           
-          # 4. Hit the service 20 times
+          # 3. Hit the Gateway 20 times (GATEWAY_PORT is already set to 8060 in CI env)
           for i in $(seq 1 20); do
-            RESPONSE=$(kubectl exec curl-test -- curl -s http://greeter-svc.default.svc.cluster.local:8080)
+            RESPONSE=$(curl -s "http://localhost:${GATEWAY_PORT}/greeter")
             echo "Request $i: $RESPONSE"
             if echo "$RESPONSE" | grep -q "version 1"; then
               V1_COUNT=$((V1_COUNT+1))
@@ -167,7 +163,7 @@ jobs:
           
           echo "📊 Results: V1=$V1_COUNT, V2=$V2_COUNT"
           
-          # 5. Assert the split (Expected ~15 for V1, ~5 for V2. We allow a margin of error for small sample size)
+          # 4. Assert the split (Expected ~15 for V1, ~5 for V2. Allowing margin of error for 20 samples)
           if [ "$V1_COUNT" -lt 10 ] || [ "$V1_COUNT" -gt 19 ]; then
             echo "❌ Traffic split failed: Expected roughly 15 requests to V1, got $V1_COUNT"
             exit 1
@@ -178,9 +174,6 @@ jobs:
           fi
           
           echo "✅ Traffic splitting successfully verified!"
-          
-          # 6. Cleanup the test pod
-          kubectl delete pod curl-test
 
       - name: Assert staging — no backup CronJob
         run: |

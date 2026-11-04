@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: greeter
-          image: ghcr.io/samuel-jinadu/greeter:main # <-- GHCR Image
+          image: ghcr.io/samuel-jinadu/greeter:main
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -47,7 +47,7 @@ spec:
     spec:
       containers:
         - name: greeter
-          image: ghcr.io/samuel-jinadu/greeter:main # <-- GHCR Image
+          image: ghcr.io/samuel-jinadu/greeter:main
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -86,7 +86,7 @@ spec:
       targetPort: 8080
 
 ---
-# --- Main Service (ParentRef for HTTPRoute) ---
+# --- Main Service (Kept as required by the exercise) ---
 apiVersion: v1
 kind: Service
 metadata:
@@ -108,11 +108,22 @@ metadata:
   namespace: default
 spec:
   parentRefs:
-    - name: greeter-svc
-      kind: Service
-      port: 8080
+    # We attach to the exercises-gateway so Envoy Gateway routes it in the CI
+    - name: exercises-gateway
+      namespace: exercises
   rules:
-    - backendRefs:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /greeter
+      filters:
+        # Rewrite /greeter to / so the greeter app responds properly
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
         - name: greeter-svc-1
           port: 8080
           weight: 75
