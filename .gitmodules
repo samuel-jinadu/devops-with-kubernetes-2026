@@ -1,0 +1,9 @@
+[submodule "k8s-dummysite-operator"]
+	path = k8s-dummysite-operator
+	url = https://github.com/samuel-jinadu/k8s-dummysite-operator.git
+[submodule "dwk-project-config"]
+	path = dwk-project-config
+	url = https://github.com/samuel-jinadu/dwk-project-config.git
+[submodule "dwk-project-app"]
+	path = dwk-project-app
+	url = https://github.com/samuel-jinadu/dwk-project-app.git
