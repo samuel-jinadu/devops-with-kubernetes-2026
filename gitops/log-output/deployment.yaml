@@ -19,7 +19,8 @@ spec:
             name: log-output-configmap
       containers:
         - name: hashgenerator
-          image: ghcr.io/samuel-jinadu/log-output:main
+          image: ghcr.io/samuel-jinadu/log-output:main # <-- Using GHCR Image
+          imagePullPolicy: Always
           readinessProbe:
             httpGet:
               path: /readyz

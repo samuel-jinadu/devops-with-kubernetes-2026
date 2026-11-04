@@ -19,6 +19,7 @@ type JSONResponse struct {
 	Pingpong    int    `json:"Ping / Pongs"`
 	MESSAGE     string `json:"MESSAGE"`
 	FileContent string `json:"file content"`
+	Greeting    string `json:"greeting"` // <-- Added
 }
 
 func main() {
@@ -45,28 +46,41 @@ func log_loop(channel chan JSONResponse) {
 			return
 		}
 
-		// Clean up whitespace/newlines from the response string
 		bodyString := strings.TrimSpace(string(bodyBytes))
-
-		// Convert string to integer
 		pingpongVal, err := strconv.Atoi(bodyString)
 		if err != nil {
 			fmt.Println("Error converting string to int:", err)
 			return
 		}
 		resp.Body.Close()
+
 		fileContent, err := os.ReadFile("/config/information.txt")
 		if err != nil {
 			fmt.Printf("could not read /config/information.txt: %v\n", err)
 		}
+
+		greeterURL := os.Getenv("GREETER_URL")
+		greeting := "greeter unavailable"
+		if greeterURL != "" {
+			gResp, gErr := http.Get(greeterURL)
+			if gErr == nil {
+				gBodyBytes, _ := io.ReadAll(gResp.Body)
+				greeting = strings.TrimSpace(string(gBodyBytes))
+				gResp.Body.Close()
+			}
+		}
+
 		channel <- JSONResponse{
 			Timestamp:   timestamp,
 			CurrentUUID: payload.String(),
 			Pingpong:    pingpongVal,
 			FileContent: string(fileContent),
 			MESSAGE:     os.Getenv("MESSAGE"),
+			Greeting:    greeting,
 		}
-		output := fmt.Sprintf("%s: %s\nPing / Pong: %d\nfile content: %sMESSAGE: %s", timestamp, payload.String(), pingpongVal, string(fileContent), os.Getenv("MESSAGE"))
+
+		output := fmt.Sprintf("%s: %s\nPing / Pong: %d\nfile content: %sMESSAGE: %s\ngreetings: %s\n",
+			timestamp, payload.String(), pingpongVal, string(fileContent), os.Getenv("MESSAGE"), greeting)
 		fmt.Print(output)
 		time.Sleep(5 * time.Second)
 		drainChannel(channel)
@@ -77,9 +91,7 @@ func drainChannel(ch chan JSONResponse) {
 	for {
 		select {
 		case <-ch:
-			// Item received and discarded
 		default:
-			// Channel is empty, break the loop
 			return
 		}
 	}
@@ -90,19 +102,16 @@ func server(channel chan JSONResponse) {
 	fmt.Printf("Server started on port %s\n", port)
 	port = ":" + port
 
-	// Liveness
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	// Legacy liveness (keep for compatibility with any client already hitting "/")
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	// Readiness: can we reach ping-pong?
 	http.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()

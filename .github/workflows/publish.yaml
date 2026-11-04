@@ -49,3 +49,8 @@ jobs:
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/broadcaster
+      - name: Build and push greeter
+        working-directory: greeter
+        run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
+        env:
+          KO_DOCKER_REPO: ghcr.io/samuel-jinadu/greeter

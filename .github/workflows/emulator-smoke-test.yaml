@@ -135,6 +135,53 @@ jobs:
           curl -fsS "${BASE}/log"      | grep -q "hello world"
           echo "✅ exercises namespace endpoints OK"
 
+      - name: Deploy and Assert Greeter Traffic Splitting (75/25)
+        run: |
+          set -euo pipefail
+          
+          # 1. Apply the Greeter manifests
+          kubectl apply -f greeter/manifests.yaml
+          
+          # 2. Wait for the Greeter deployments to be ready
+          kubectl wait --for=condition=Ready pod -l app=greeter,version=v1 --timeout=120s
+          kubectl wait --for=condition=Ready pod -l app=greeter,version=v2 --timeout=120s
+          
+          # 3. Deploy a temporary curl pod in the default namespace to test internal routing
+          kubectl run curl-test --image=curlimages/curl:latest --restart=Never -- sleep 3600
+          kubectl wait --for=condition=Ready pod/curl-test --timeout=60s
+          
+          echo "▶ Firing 20 requests to greeter-svc..."
+          V1_COUNT=0
+          V2_COUNT=0
+          
+          # 4. Hit the service 20 times
+          for i in $(seq 1 20); do
+            RESPONSE=$(kubectl exec curl-test -- curl -s http://greeter-svc.default.svc.cluster.local:8080)
+            echo "Request $i: $RESPONSE"
+            if echo "$RESPONSE" | grep -q "version 1"; then
+              V1_COUNT=$((V1_COUNT+1))
+            elif echo "$RESPONSE" | grep -q "version 2"; then
+              V2_COUNT=$((V2_COUNT+1))
+            fi
+          done
+          
+          echo "📊 Results: V1=$V1_COUNT, V2=$V2_COUNT"
+          
+          # 5. Assert the split (Expected ~15 for V1, ~5 for V2. We allow a margin of error for small sample size)
+          if [ "$V1_COUNT" -lt 10 ] || [ "$V1_COUNT" -gt 19 ]; then
+            echo "❌ Traffic split failed: Expected roughly 15 requests to V1, got $V1_COUNT"
+            exit 1
+          fi
+          if [ "$V2_COUNT" -lt 1 ] || [ "$V2_COUNT" -gt 10 ]; then
+            echo "❌ Traffic split failed: Expected roughly 5 requests to V2, got $V2_COUNT"
+            exit 1
+          fi
+          
+          echo "✅ Traffic splitting successfully verified!"
+          
+          # 6. Cleanup the test pod
+          kubectl delete pod curl-test
+
       - name: Assert staging — no backup CronJob
         run: |
           set -euo pipefail

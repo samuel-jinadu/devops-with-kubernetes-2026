@@ -7,5 +7,6 @@ data:
   MESSAGE: hello world
   PORT: "9090"
   PINGPONGURL: http://pingpong-stable:2345/count
+  GREETER_URL: http://greeter-svc.default.svc.cluster.local:8080
   information.txt: |
     this text is from file
