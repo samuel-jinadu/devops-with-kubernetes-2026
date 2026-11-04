@@ -138,67 +138,76 @@ jobs:
       - name: Deploy and Assert Wikipedia App (Init & Sidecar)
         run: |
           set -euo pipefail
-          
+
           echo "▶ Deploying Wikipedia app..."
           kubectl apply -f wikipedia-app/deployment.yaml
-          
+
           echo "▶ Waiting for pod to be ready (Init container runs first)..."
           kubectl wait --for=condition=Ready pod -l app=wikipedia -n exercises --timeout=120s
-          
+
           # 1. Verify the Init Container
           echo "▶ Verifying Init container content..."
           kubectl port-forward deployment/wikipedia-app 8081:80 -n exercises >/dev/null 2>&1 &
           PF_PID=$!
-          
-          # Wait for port-forward to bind
+
+          # NOTE: deliberately NOT `curl ... | grep -q`. `grep -q` exits as soon as it
+          # matches, which sends SIGPIPE to curl while it is still writing this ~600 KB
+          # page; combined with `set -o pipefail` that pipeline reports 141 even though
+          # the content is correct. Download first, grep the file.
+          INIT_OK=0
           for i in $(seq 1 20); do
-            if curl -sf http://localhost:8081 | grep -qi "Kubernetes"; then
-              echo "✅ Init container successfully served the Kubernetes page."
-              break
-            fi
-            if [ "$i" -eq 20 ]; then
-              echo "❌ Init container failed to serve the Kubernetes page."
-              curl -sv http://localhost:8081 || true
-              kill $PF_PID 2>/dev/null || true
-              exit 1
+            if curl -sf http://localhost:8081 -o /tmp/wiki-init.html; then
+              if grep -qi "Kubernetes" /tmp/wiki-init.html; then
+                echo "✅ Init container successfully served the Kubernetes page."
+                INIT_OK=1
+                break
+              fi
             fi
             sleep 1
           done
-          
-          INITIAL_PAGE=$(curl -s http://localhost:8081)
-          
+          if [ "$INIT_OK" -ne 1 ]; then
+            echo "❌ Init container failed to serve the Kubernetes page."
+            curl -sv http://localhost:8081 || true
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+
           # 2. Patch the sidecar for fast testing
           echo "▶ Patching sidecar to sleep for only 2 seconds..."
           kubectl patch deployment wikipedia-app -n exercises --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/1/command/2", "value": "while true; do SLEEP_TIME=2; echo \"Sleeping for $SLEEP_TIME seconds...\"; sleep $SLEEP_TIME; echo \"Fetching random Wikipedia page...\"; curl -sL -o /usr/share/nginx/html/index.html https://en.wikipedia.org/wiki/Special:Random; echo \"Page updated!\"; done"}]'
-          
+
           kubectl rollout status deployment/wikipedia-app -n exercises --timeout=120s
-          
+
           # 3. Verify the Sidecar updates the content
           echo "▶ Waiting for sidecar to update the page..."
           kill $PF_PID 2>/dev/null || true
           sleep 1
-          
+
           kubectl port-forward deployment/wikipedia-app 8081:80 -n exercises >/dev/null 2>&1 &
           PF_PID=$!
           trap 'kill $PF_PID 2>/dev/null || true' EXIT
-          
+
+          SIDECAR_OK=0
           for i in $(seq 1 20); do
-            CURRENT_PAGE=$(curl -s http://localhost:8081 || true)
-            # Check if the page has changed AND is a valid Wikipedia page
-            if [ "$CURRENT_PAGE" != "$INITIAL_PAGE" ] && echo "$CURRENT_PAGE" | grep -qi "Wikipedia"; then
-              echo "✅ Sidecar successfully fetched and served a random Wikipedia page."
-              break
-            fi
-            if [ "$i" -eq 20 ]; then
-              echo "❌ Sidecar did not update the page."
-              kubectl logs deployment/wikipedia-app -c sidecar-fetch -n exercises --tail=20 || true
-              exit 1
+            if curl -sf http://localhost:8081 -o /tmp/wiki-current.html; then
+              # Compare files (no pipe → no SIGPIPE) and confirm the payload is
+              # actually a Wikipedia page.
+              if ! cmp -s /tmp/wiki-init.html /tmp/wiki-current.html && grep -qi "Wikipedia" /tmp/wiki-current.html; then
+                echo "✅ Sidecar successfully fetched and served a random Wikipedia page."
+                SIDECAR_OK=1
+                break
+              fi
             fi
             sleep 2
           done
-          
+          if [ "$SIDECAR_OK" -ne 1 ]; then
+            echo "❌ Sidecar did not update the page."
+            kubectl logs deployment/wikipedia-app -c sidecar-fetch -n exercises --tail=20 || true
+            exit 1
+          fi
+
           echo "🎉 Wikipedia app (Init + Sidecar) verification passed!"
-          
+
           # 4. Cleanup
           kubectl delete deployment wikipedia-app -n exercises --ignore-not-found
 
