@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wikipedia-app
+  namespace: exercises
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wikipedia
+  template:
+    metadata:
+      labels:
+        app: wikipedia
+    spec:
+      # Shared volume between all containers
+      volumes:
+        - name: www-data
+          emptyDir: {}
+
+      # 1. Init Container: Fetches the Kubernetes page on startup
+      initContainers:
+        - name: fetch-kubernetes
+          image: curlimages/curl:latest
+          volumeMounts:
+            - name: www-data
+              mountPath: /usr/share/nginx/html
+          command:
+            - sh
+            - -c
+            - |
+              echo "Fetching Kubernetes page..."
+              curl -sL -o /usr/share/nginx/html/index.html https://en.wikipedia.org/wiki/Kubernetes
+              echo "Done."
+
+      # 2. Main & Sidecar Containers
+      containers:
+        # Main container: Nginx serving the shared directory
+        - name: nginx
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: www-data
+              mountPath: /usr/share/nginx/html
+
+        # Sidecar container: Updates the page randomly
+        - name: sidecar-fetch
+          image: curlimages/curl:latest
+          volumeMounts:
+            - name: www-data
+              mountPath: /usr/share/nginx/html
+          command:
+            - sh
+            - -c
+            - |
+              while true; do
+                # Generate a random sleep time between 300s (5m) and 900s (15m)
+                SLEEP_TIME=$(( ( $(od -An -N2 -tu2 < /dev/urandom) % 601 ) + 300 ))
+                echo "Sleeping for $SLEEP_TIME seconds..."
+                sleep $SLEEP_TIME
+                
+                echo "Fetching random Wikipedia page..."
+                # curl -L follows redirects (Special:Random redirects to an actual page)
+                curl -sL -o /usr/share/nginx/html/index.html https://en.wikipedia.org/wiki/Special:Random
+                echo "Page updated!"
+              done
