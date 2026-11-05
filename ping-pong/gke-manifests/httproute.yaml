@@ -6,6 +6,11 @@ metadata:
 spec:
   parentRefs:
     - name: exercises-gateway
+  # The Gateway listener has no hostname; without a hostname on the route
+  # Envoy Gateway generates a directResponse 500. A wildcard makes the route
+  # match any incoming Host header.
+  hostnames:
+    - "*"
   rules:
     - matches:
         - path:
@@ -16,7 +21,7 @@ spec:
           urlRewrite:
             # __PINGPONG_HOST__ is substituted by deploy-gke.sh with the
             # ksvc's actual sslip.io hostname (e.g.
-            # pingpong.exercises.10.0.0.1.sslip.io). Using the cluster-local
+            # pingpong.exercises.172.17.0.3.sslip.io). Using the cluster-local
             # name here causes the Knative activator to reject the request
             # with 500 — it only accepts Hosts registered in the ksvc's
             # public URL.

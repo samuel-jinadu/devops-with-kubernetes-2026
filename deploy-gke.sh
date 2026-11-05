@@ -256,18 +256,11 @@ echo "▶ Deploying ping-pong as a Knative Service..."
 kubectl apply -f ping-pong/knative-service.yaml
 kubectl -n exercises wait --for=condition=Ready ksvc/pingpong --timeout=300s
 
-# The activator only accepts Host headers that match the ksvc's *public*
-# URL. That URL is the sslip.io name Knative injected via serving-default-
-# domain.yaml. Fetch it, then substitute it into the HTTPRoute so the
-# URLRewrite filter sends a Host the activator recognises.
 PINGPONG_HOST=$(
   kubectl -n exercises get ksvc pingpong -o jsonpath='{.status.url}' \
     | sed -E 's#^https?://##'
 )
-if [ -z "${PINGPONG_HOST}" ]; then
-  echo "⚠  ksvc/pingpong has no status.url yet — falling back to cluster-local"
-  PINGPONG_HOST="pingpong.exercises.svc.cluster.local"
-fi
+[ -z "$PINGPONG_HOST" ] && PINGPONG_HOST="pingpong.exercises.svc.cluster.local"
 echo "▶ /pingpong will rewrite Host → ${PINGPONG_HOST}"
 
 sed "s|__PINGPONG_HOST__|${PINGPONG_HOST}|g" \
