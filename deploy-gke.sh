@@ -116,7 +116,9 @@ if ! kubectl get ns knative-serving >/dev/null 2>&1; then
   for d in controller webhook activator autoscaler; do
     kubectl -n knative-serving rollout status deployment/"$d" --timeout=300s
   done
-  kubectl -n kourier-system rollout status deployment --all --timeout=300s
+ for d in $(kubectl -n kourier-system get deploy -o name); do
+    kubectl -n kourier-system rollout status "$d" --timeout=300s
+  done
   echo "✅ Knative ready"
 else
   echo "▶ Knative already installed; skipping."

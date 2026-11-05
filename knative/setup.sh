@@ -60,8 +60,10 @@ for d in controller webhook activator autoscaler; do
 done
 
 echo "▶ Waiting for Kourier deployments..."
-kubectl -n kourier-system rollout status deployment --all --timeout=300s 2>/dev/null || \
-  echo "  ⚠ Kourier not ready yet — check: kubectl get pods -n kourier-system"
+for d in $(kubectl -n kourier-system get deploy -o name); do
+  kubectl -n kourier-system rollout status "$d" --timeout=300s 2>/dev/null || \
+    echo "  ⚠ $d not ready yet — check: kubectl get pods -n kourier-system"
+done
 
 # ── 5. Magic DNS (sslip.io) ─────────────────────────────────────────────
 echo "▶ Configuring Magic DNS (sslip.io)..."
