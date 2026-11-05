@@ -553,6 +553,19 @@ jobs:
               -l gateway.envoyproxy.io/owning-gateway-name=exercises-gateway \
               --tail=100 --prefix || true
 
+            echo "=== envoy-gateway controller logs ==="
+            kubectl -n envoy-gateway-system logs \
+              -l control-plane=envoy-gateway --tail=100 --prefix || true
+
+            echo "=== envoy data-plane access/error logs ==="
+            # Envoy Gateway's proxy container is called 'envoy'.
+            kubectl -n envoy-gateway-system logs \
+              -l gateway.envoyproxy.io/owning-gateway-name=exercises-gateway \
+              -c envoy --tail=300 2>&1 \
+              | grep -Ei 'error|500|direct_response|no_route|via_upstream|response_code' \
+              | tail -50 || true
+              
             echo "=== httproute ==="
             kubectl -n exercises get httproute pingpong-route -o yaml || true
+
           fi

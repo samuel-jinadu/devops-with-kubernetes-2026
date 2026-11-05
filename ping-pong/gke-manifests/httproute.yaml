@@ -6,11 +6,14 @@ metadata:
 spec:
   parentRefs:
     - name: exercises-gateway
-  # The Gateway listener has no hostname; without a hostname on the route
-  # Envoy Gateway generates a directResponse 500. A wildcard makes the route
-  # match any incoming Host header.
+  # "localhost"      → matches Host: localhost:8060 (CI port-forward path)
+  # "*.sslip.io"     → matches Host: pingpong.exercises.<ip>.sslip.io
+  # NOTE: a bare "*" is NOT a valid Gateway API hostname — the schema
+  # requires at least one label after "*.". "localhost" has no dot and
+  # therefore has to be listed separately.
   hostnames:
-    - "*"
+    - localhost
+    - "*.sslip.io"
   rules:
     - matches:
         - path:
@@ -20,15 +23,13 @@ spec:
         - type: URLRewrite
           urlRewrite:
             # __PINGPONG_HOST__ is substituted by deploy-gke.sh with the
-            # ksvc's actual sslip.io hostname (e.g.
-            # pingpong.exercises.172.17.0.3.sslip.io). Using the cluster-local
-            # name here causes the Knative activator to reject the request
-            # with 500 — it only accepts Hosts registered in the ksvc's
-            # public URL.
+            # ksvc's actual sslip.io hostname. The activator / queue-proxy
+            # chain expects Host to be the ksvc's registered hostname, not
+            # the incoming one.
             hostname: __PINGPONG_HOST__
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: pingpong
-          port: 80
+        - name: pingpong        # ClusterIP Service created by the ksvc
+          port: 80              # ksvc listens on :80, queue-proxy rewrites to :8080
