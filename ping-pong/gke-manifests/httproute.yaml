@@ -14,13 +14,12 @@ spec:
       filters:
         - type: URLRewrite
           urlRewrite:
+            # Knative (Kourier / activator) routes by Host header. This must
+            # match the ksvc's cluster-local DNS name.
+            hostname: pingpong.exercises.svc.cluster.local
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: pingpong-stable
-          port: 2345
-          weight: 100
-        - name: pingpong-canary
-          port: 2345
-          weight: 0
+        - name: pingpong        # ClusterIP Service created by the Knative Service
+          port: 80              # Knative listens on 80; queue-proxy rewrites to 9090

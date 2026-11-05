@@ -95,6 +95,33 @@ EOF
   GATEWAY_CLASS="eg"
 fi
 
+# ─── 3b. Knative Serving (for serverless ping-pong) ───────────────────────
+KNATIVE_VERSION="v1.21.3"
+KOURIER_VERSION="v1.21.1"
+
+if ! kubectl get ns knative-serving >/dev/null 2>&1; then
+  echo "▶ Installing Knative Serving ${KNATIVE_VERSION} + Kourier ${KOURIER_VERSION}..."
+
+  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml"
+  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml"
+  kubectl apply -f "https://github.com/knative-extensions/net-kourier/releases/download/knative-${KOURIER_VERSION}/kourier.yaml"
+
+  kubectl patch configmap/config-network \
+    --namespace knative-serving --type merge \
+    --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+
+  # Magic DNS (sslip.io) — harmless on both emulator and real GKE
+  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-default-domain.yaml"
+
+  for d in controller webhook activator autoscaler; do
+    kubectl -n knative-serving rollout status deployment/"$d" --timeout=300s
+  done
+  kubectl -n kourier-system rollout status deployment --all --timeout=300s
+  echo "✅ Knative ready"
+else
+  echo "▶ Knative already installed; skipping."
+fi
+
 # ─── 4. Gateway ───────────────────────────────────────────────────────────────
 sed "s|gatewayClassName: .*|gatewayClassName: ${GATEWAY_CLASS}|" \
   gke-manifests/gateway.yaml | kubectl apply -f -
@@ -179,11 +206,13 @@ EOF
 kubectl -n argo-rollouts rollout restart deployment argo-rollouts
 kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
 
-# ─── 7b. Shared infra ─────────────────────────────────────────────────────────
+# ─── 7b. Ping-pong as a Knative Service ──────────────────────────────────
+echo "▶ Deploying ping-pong as a Knative Service..."
+kubectl apply -f ping-pong/knative-service.yaml
+kubectl -n exercises wait --for=condition=Ready ksvc/pingpong --timeout=300s
+
+echo "▶ Applying /pingpong HTTPRoute → Knative Service..."
 kubectl apply -f ping-pong/gke-manifests/httproute.yaml
-kubectl apply -f ping-pong/gke-manifests/pingpong-cpu-analysis.yaml
-kubectl apply -f gke-manifests/ping-pong-canary.yaml
-kubectl -n exercises wait --for=condition=Available rollout/pingpong-rollout --timeout=300s
 
 # ─── 7c. NATS ─────────────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading NATS..."
