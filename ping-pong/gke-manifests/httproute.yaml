@@ -14,12 +14,16 @@ spec:
       filters:
         - type: URLRewrite
           urlRewrite:
-            # Knative (Kourier / activator) routes by Host header. This must
-            # match the ksvc's cluster-local DNS name.
-            hostname: pingpong.exercises.svc.cluster.local
+            # __PINGPONG_HOST__ is substituted by deploy-gke.sh with the
+            # ksvc's actual sslip.io hostname (e.g.
+            # pingpong.exercises.10.0.0.1.sslip.io). Using the cluster-local
+            # name here causes the Knative activator to reject the request
+            # with 500 — it only accepts Hosts registered in the ksvc's
+            # public URL.
+            hostname: __PINGPONG_HOST__
             path:
               type: ReplacePrefixMatch
               replacePrefixMatch: /
       backendRefs:
-        - name: pingpong        # ClusterIP Service created by the Knative Service
-          port: 80              # Knative listens on 80; queue-proxy rewrites to 9090
+        - name: pingpong
+          port: 80

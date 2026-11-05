@@ -533,4 +533,26 @@ jobs:
             kubectl -n production logs -l app=broadcaster --tail=50 --prefix || true
             kubectl -n production logs -l app=sink        --tail=50          || true
             kubectl -n production logs -l job-name        --tail=50 --prefix || true
+                        echo "=== pingpong ksvc ==="
+            kubectl -n exercises get ksvc pingpong -o yaml || true
+            kubectl -n exercises describe ksvc pingpong || true
+
+            echo "=== pingpong pod logs (app + queue-proxy) ==="
+            kubectl -n exercises logs \
+              -l serving.knative.dev/service=pingpong \
+              --all-containers --tail=200 --prefix || true
+
+            echo "=== knative activator logs ==="
+            kubectl -n knative-serving logs -l app=activator --tail=100 --prefix || true
+
+            echo "=== kourier logs ==="
+            kubectl -n kourier-system logs -l app=3scale-kourier-gateway --tail=100 --prefix || true
+
+            echo "=== envoy data-plane logs ==="
+            kubectl -n envoy-gateway-system logs \
+              -l gateway.envoyproxy.io/owning-gateway-name=exercises-gateway \
+              --tail=100 --prefix || true
+
+            echo "=== httproute ==="
+            kubectl -n exercises get httproute pingpong-route -o yaml || true
           fi
