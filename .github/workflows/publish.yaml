@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: read
-  packages: write          
+  packages: write
 
 jobs:
   publish:
@@ -19,36 +19,65 @@ jobs:
         with:
           go-version-file: log-output/go.mod
           cache: true
+          cache-dependency-path: "**/go.sum"
 
-      - name: Setup Ko
-        uses: ko-build/setup-ko@v0.8
-        with:
-            version: v0.19.1
-      - name: Build and push
+      - name: Install ko (with retries)
+        run: |
+          set -euo pipefail
+          KO_VERSION="v0.19.1"
+          KO_URL="https://github.com/ko-build/ko/releases/download/${KO_VERSION}/ko_${KO_VERSION#v}_Linux_x86_64.tar.gz"
+
+          for attempt in 1 2 3 4 5; do
+            echo "→ downloading ko ${KO_VERSION} (attempt ${attempt}/5)"
+            rm -f /tmp/ko.tar.gz
+            if curl -fsSL --retry 3 --retry-delay 2 "${KO_URL}" -o /tmp/ko.tar.gz \
+               && tar -xzf /tmp/ko.tar.gz -C /usr/local/bin ko \
+               && ko version; then
+              echo "✅ ko ${KO_VERSION} installed"
+              exit 0
+            fi
+            echo "⚠  attempt ${attempt} failed; retrying in $((attempt * 3))s..."
+            sleep $((attempt * 3))
+          done
+
+          echo "❌ could not install ko after 5 attempts"
+          exit 1
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | ko login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+
+      - name: Build and push log-output
         working-directory: log-output
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/log-output
-      - name: Build and push
+
+      - name: Build and push todo-app
         working-directory: todo-app
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/todo-app
-      - name: Build and push
+
+      - name: Build and push todo-backend
         working-directory: todo-backend
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/todo-backend
-      - name: Build and push
+
+      - name: Build and push ping-pong
         working-directory: ping-pong
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/ping-pong-app
+
       - name: Build and push broadcaster
         working-directory: broadcaster
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
         env:
           KO_DOCKER_REPO: ghcr.io/samuel-jinadu/broadcaster
+
       - name: Build and push greeter
         working-directory: greeter
         run: ko build . --bare --sbom=none --tags=${{ github.ref_name }}
