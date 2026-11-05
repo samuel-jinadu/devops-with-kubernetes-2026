@@ -3,21 +3,26 @@ kind: Service
 metadata:
   name: pingpong
   namespace: exercises
-  annotations:
-    # Keep one replica warm so log-output's 2-second /readyz timeout never
-    # fails on a cold start. Remove / set to "0" to allow true scale-to-zero.
-    autoscaling.knative.dev/min-scale: "1"
 spec:
   template:
+    # Pod-template annotations belong here, NOT on the ksvc's top-level
+    # metadata.annotations. Knative only reads autoscaling.* from this spot.
+    metadata:
+      annotations:
+        # Keep one replica warm so log-output's 2-second /readyz timeout never
+        # fails on a cold start. Set to "0" (or remove) for true scale-to-zero.
+        autoscaling.knative.dev/min-scale: "1"
     spec:
       containers:
         - name: pingpong
           image: ghcr.io/samuel-jinadu/ping-pong-app:main
+          # 9090 is reserved by Knative (used by autoscaler). Use 8080.
+          # Knative injects PORT=8080 into the container env, which the app
+          # reads via os.Getenv("PORT") — so do NOT set PORT yourself.
           ports:
-            - containerPort: 9090
+            - containerPort: 8080
           env:
-            - name: PORT
-              value: "9090"
+            # NOTE: no PORT entry — Knative owns it.
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
