@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# ─── 0. Deployment target ─────────────────────────────────────────────────────
+# ─── 0. Deployment target ───────────────────────────────────────────────
 # TARGET_NS:  staging | production | <feature-branch>
 # TARGET_TAG: main | vX.Y.Z | <feature-branch>
 #
@@ -16,19 +16,19 @@ STORAGE_EMULATOR_HOST="${STORAGE_EMULATOR_HOST:-}"
 
 # Guardrails
 if ! [[ "$TARGET_NS" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-  echo "❌ Invalid namespace: '$TARGET_NS'"
+  echo "✖ Invalid namespace: '$TARGET_NS'"
   exit 1
 fi
 case "$TARGET_NS" in
   exercises|default|kube-system|kube-public|kube-node-lease|envoy-gateway-system|monitoring|argocd|argo-rollouts)
-    echo "❌ Refusing to deploy into reserved namespace '$TARGET_NS'"
+    echo "✖ Refusing to deploy into reserved namespace '$TARGET_NS'"
     exit 1
     ;;
 esac
 
 echo "▶ Target namespace: $TARGET_NS (image tag: $TARGET_TAG)"
 
-# ─── Helper: emulator host detection ──────────────────────────────────────────
+# ─── Helper: emulator host detection ────────────────────────────────────
 detect_emulator_host() {
   if [ -n "${STORAGE_EMULATOR_HOST}" ]; then
     local h="${STORAGE_EMULATOR_HOST#http://}"; h="${h#https://}"; h="${h%%:*}"
@@ -41,7 +41,28 @@ detect_emulator_host() {
   echo "172.17.0.1"
 }
 
-# ─── 1. Cluster ───────────────────────────────────────────────────────────────
+# ─── Helper: apply a remote YAML with retries ───────────────────────────
+# GitHub's release CDN occasionally 504s for a few seconds. Retry with
+# exponential-ish backoff (5 attempts, ~4/7/12/19 s) before giving up.
+apply_remote() {
+  local url="$1"
+  local desc="${2:-$url}"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if kubectl apply --request-timeout=90s -f "$url"; then
+      return 0
+    fi
+    if [ "$attempt" -eq 5 ]; then
+      echo "✖ apply_remote: giving up on ${desc} after 5 attempts"
+      return 1
+    fi
+    local wait=$(( attempt * attempt + 3 ))
+    echo "  ⚠  ${desc} attempt ${attempt}/5 failed — retrying in ${wait}s"
+    sleep "${wait}"
+  done
+}
+
+# ─── 1. Cluster ─────────────────────────────────────────────────────────
 if ! gcloud container clusters describe dwk-cluster --zone=europe-north1-b >/dev/null 2>&1; then
   gcloud container clusters create dwk-cluster \
     --zone=europe-north1-b --num-nodes=2 --machine-type=e2-small --gateway-api=standard
@@ -64,11 +85,11 @@ for i in $(seq 1 30); do
 done
 kubectl wait --for=condition=Ready nodes --all --timeout=180s
 
-# ─── 2. Namespaces ────────────────────────────────────────────────────────────
+# ─── 2. Namespaces ──────────────────────────────────────────────────────
 kubectl apply -f manifests/namespaces
 kubectl create namespace "$TARGET_NS" --dry-run=client -o yaml | kubectl apply -f -
 
-# ─── 3. GatewayClass (real GKE vs emulator) ───────────────────────────────────
+# ─── 3. GatewayClass (real GKE vs emulator) ────────────────────────────
 GATEWAY_CLASS=""
 if kubectl get gatewayclass gke-l7-global-external-managed &>/dev/null; then
   echo "▶ Real GKE detected."
@@ -76,8 +97,9 @@ if kubectl get gatewayclass gke-l7-global-external-managed &>/dev/null; then
 else
   echo "▶ Emulator detected; installing Envoy Gateway..."
 
-  kubectl apply --server-side -f \
-    https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
+  apply_remote \
+    "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml" \
+    "Gateway API standard-install CRDs"
 
   helm upgrade --install eg oci://docker.io/envoyproxy/gateway-helm \
     --version v1.5.4 --skip-crds -n envoy-gateway-system --create-namespace
@@ -95,28 +117,49 @@ EOF
   GATEWAY_CLASS="eg"
 fi
 
-# ─── 3b. Knative Serving (for serverless ping-pong) ───────────────────────
+# ─── 3b. Knative Serving (for serverless ping-pong) ────────────────────
 KNATIVE_VERSION="v1.21.3"
 KOURIER_VERSION="v1.21.1"
 
-if ! kubectl get ns knative-serving >/dev/null 2>&1; then
+# A real "is Knative installed" check — namespace alone isn't enough, since
+# a CDN failure mid-apply leaves knative-serving in place but missing the
+# actual Deployments.
+knative_ready() {
+  kubectl -n knative-serving get deployment/controller >/dev/null 2>&1 && \
+  kubectl -n knative-serving get deployment/webhook    >/dev/null 2>&1 && \
+  kubectl -n knative-serving get deployment/activator  >/dev/null 2>&1 && \
+  kubectl -n knative-serving get deployment/autoscaler >/dev/null 2>&1 && \
+  kubectl -n kourier-system  get deployment -l app=3scale-kourier-gateway >/dev/null 2>&1
+}
+
+if ! knative_ready; then
   echo "▶ Installing Knative Serving ${KNATIVE_VERSION} + Kourier ${KOURIER_VERSION}..."
 
-  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml"
-  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml"
-  kubectl apply -f "https://github.com/knative-extensions/net-kourier/releases/download/knative-${KOURIER_VERSION}/kourier.yaml"
+  apply_remote \
+    "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml" \
+    "Knative Serving CRDs"
+
+  apply_remote \
+    "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml" \
+    "Knative Serving core"
+
+  apply_remote \
+    "https://github.com/knative-extensions/net-kourier/releases/download/knative-${KOURIER_VERSION}/kourier.yaml" \
+    "Kourier"
 
   kubectl patch configmap/config-network \
     --namespace knative-serving --type merge \
     --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
 
   # Magic DNS (sslip.io) — harmless on both emulator and real GKE
-  kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-default-domain.yaml"
+  apply_remote \
+    "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-default-domain.yaml" \
+    "Knative magic DNS (serving-default-domain)"
 
   for d in controller webhook activator autoscaler; do
     kubectl -n knative-serving rollout status deployment/"$d" --timeout=300s
   done
- for d in $(kubectl -n kourier-system get deploy -o name); do
+  for d in $(kubectl -n kourier-system get deploy -o name); do
     kubectl -n kourier-system rollout status "$d" --timeout=300s
   done
   echo "✅ Knative ready"
@@ -124,11 +167,11 @@ else
   echo "▶ Knative already installed; skipping."
 fi
 
-# ─── 4. Gateway ───────────────────────────────────────────────────────────────
+# ─── 4. Gateway ─────────────────────────────────────────────────────────
 sed "s|gatewayClassName: .*|gatewayClassName: ${GATEWAY_CLASS}|" \
   gke-manifests/gateway.yaml | kubectl apply -f -
 
-# ─── 5. Secrets (applied OUTSIDE Argo CD) ─────────────────────────────────────
+# ─── 5. Secrets (applied OUTSIDE Argo CD) ──────────────────────────────
 # postgres-credentials: staging AND production both need these
 if [ "$TARGET_NS" = "staging" ] || [ "$TARGET_NS" = "production" ]; then
   sops --decrypt postgres/postgres-credentials.enc.yaml         | kubectl apply -f -
@@ -171,12 +214,12 @@ if [ "$TARGET_NS" = "production" ]; then
   fi
 fi
 
-# ─── 6. Postgres (shared) ─────────────────────────────────────────────────────
+# ─── 6. Postgres (shared) ───────────────────────────────────────────────
 kubectl apply -f postgres/postgres.yaml
 echo "▶ waiting for Postgres…"
 kubectl -n exercises rollout status statefulset/postgres-stset --timeout=180s
 
-# ─── 7. Monitoring + Argo Rollouts ────────────────────────────────────────────
+# ─── 7. Monitoring + Argo Rollouts ─────────────────────────────────────
 echo "▶ Installing/upgrading Prometheus stack..."
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
 helm repo update >/dev/null
@@ -208,7 +251,7 @@ EOF
 kubectl -n argo-rollouts rollout restart deployment argo-rollouts
 kubectl -n argo-rollouts rollout status deployment/argo-rollouts --timeout=180s
 
-# ─── 7b. Ping-pong as a Knative Service ──────────────────────────────────
+# ─── 7b. Ping-pong as a Knative Service ────────────────────────────────
 echo "▶ Deploying ping-pong as a Knative Service..."
 kubectl apply -f ping-pong/knative-service.yaml
 kubectl -n exercises wait --for=condition=Ready ksvc/pingpong --timeout=300s
@@ -230,7 +273,7 @@ echo "▶ /pingpong will rewrite Host → ${PINGPONG_HOST}"
 sed "s|__PINGPONG_HOST__|${PINGPONG_HOST}|g" \
   ping-pong/gke-manifests/httproute.yaml | kubectl apply -f -
 
-# ─── 7c. NATS ─────────────────────────────────────────────────────────────────
+# ─── 7c. NATS ───────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading NATS..."
 helm repo add nats https://nats-io.github.io/k8s/helm/charts/ >/dev/null 2>&1 || true
 helm repo update nats >/dev/null
@@ -238,7 +281,7 @@ helm upgrade --install nats nats/nats --namespace exercises --create-namespace \
   --set config.jetstream.enabled=false --wait --timeout 5m
 kubectl -n exercises rollout status statefulset/nats --timeout=180s
 
-# ─── 7d. Argo CD ──────────────────────────────────────────────────────────────
+# ─── 7d. Argo CD ────────────────────────────────────────────────────────
 echo "▶ Installing/upgrading Argo CD..."
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null 2>&1 || true
 helm repo update argo >/dev/null
@@ -262,7 +305,7 @@ data:
 '
 sleep 3
 
-# ─── 8. Direct deploy (branches, or when FORCE_DIRECT_APPLY=1) ────────────────
+# ─── 8. Direct deploy (branches, or when FORCE_DIRECT_APPLY=1) ─────────
 should_direct_apply=0
 if [ "${FORCE_DIRECT_APPLY:-0}" = "1" ]; then
   should_direct_apply=1
@@ -312,7 +355,7 @@ EOF
   kubectl -n "$TARGET_NS" rollout status deployment/broadcaster             --timeout=180s
 fi
 
-# ─── 9. Argo CD Applications ──────────────────────────────────────────────────
+# ─── 9. Argo CD Applications ───────────────────────────────────────────
 GITOPS_REPO_URL="${GITOPS_REPO_URL:-}"
 GITOPS_REVISION="${GITOPS_REVISION:-main}"
 if [ -z "${GITOPS_REPO_URL}" ]; then
@@ -363,7 +406,7 @@ else
       echo "  $app: ${synced:-Pending}/${health:-Pending} (attempt $i/60)"
       sleep 5
       if [ "$i" -eq 60 ]; then
-        echo "❌ $app did not converge. Dumping status:"
+        echo "✖ $app did not converge. Dumping status:"
         kubectl -n argocd get application "$app" -o yaml | tail -80
         exit 1
       fi
@@ -371,7 +414,7 @@ else
   done
 fi
 
-# ─── 10. Wait for Gateway data plane ──────────────────────────────────────────
+# ─── 10. Wait for Gateway data plane ───────────────────────────────────
 GATEWAY_NAME="exercises-gateway"; NS="exercises"
 
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
@@ -392,21 +435,21 @@ else
       break
     fi
     sleep 2
-    [ "$i" -eq 90 ] && { echo "❌ Envoy data plane timed out"; exit 1; }
+    [ "$i" -eq 90 ] && { echo "✖ Envoy data plane timed out"; exit 1; }
   done
 fi
 
-# ─── 11. Gateway address + port-forward (emulator) ────────────────────────────
+# ─── 11. Gateway address + port-forward (emulator) ────────────────────
 GATEWAY_ADDRESS=""; PORT_FORWARD_PID=""
 
 if [ "${GATEWAY_CLASS}" = "gke-l7-global-external-managed" ]; then
   GATEWAY_ADDRESS=$(kubectl get gateway/"${GATEWAY_NAME}" -n "${NS}" -o jsonpath='{.status.addresses[0].value}')
-  [ -z "${GATEWAY_ADDRESS}" ] && { echo "❌ Gateway address empty"; exit 1; }
+  [ -z "${GATEWAY_ADDRESS}" ] && { echo "✖ Gateway address empty"; exit 1; }
 else
   [ -z "${ENVOY_SVC:-}" ] && ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
     --selector=gateway.envoyproxy.io/owning-gateway-namespace=${NS},gateway.envoyproxy.io/owning-gateway-name=${GATEWAY_NAME} \
     -o jsonpath='{.items[0].metadata.name}')
-  [ -z "${ENVOY_SVC}" ] && { echo "❌ Envoy service not found"; exit 1; }
+  [ -z "${ENVOY_SVC}" ] && { echo "✖ Envoy service not found"; exit 1; }
 
   PORT_FORWARD_PORT="${PORT_FORWARD_PORT:-8060}"
   pkill -f "kubectl.*port-forward.*${PORT_FORWARD_PORT}" 2>/dev/null || true
@@ -415,11 +458,11 @@ else
     >/tmp/envoy-port-forward.log 2>&1 &
   PORT_FORWARD_PID=$!
   sleep 2
-  kill -0 "${PORT_FORWARD_PID}" 2>/dev/null || { echo "❌ Port-forward died"; exit 1; }
+  kill -0 "${PORT_FORWARD_PID}" 2>/dev/null || { echo "✖ Port-forward died"; exit 1; }
   GATEWAY_ADDRESS="localhost:${PORT_FORWARD_PORT}"
 fi
 
-# ─── 12. URLs ─────────────────────────────────────────────────────────────────
+# ─── 12. URLs ──────────────────────────────────────────────────────────
 echo ""
 echo "✅ Gateway address: ${GATEWAY_ADDRESS}"
 echo "   Target namespace: ${TARGET_NS}  (image tag: ${TARGET_TAG})"

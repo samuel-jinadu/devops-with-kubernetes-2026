@@ -9,7 +9,26 @@ echo "================================================"
 echo "  Knative Serving on k3d (exercise 5.6)"
 echo "================================================"
 
-# ── 1. Create or start the cluster ───────────────────────────────────────
+# ── Helper: apply a remote YAML with retries ───────────────────────────
+apply_remote() {
+  local url="$1"
+  local desc="${2:-$url}"
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if kubectl apply --request-timeout=90s -f "$url"; then
+      return 0
+    fi
+    if [ "$attempt" -eq 5 ]; then
+      echo "✖ apply_remote: giving up on ${desc} after 5 attempts"
+      return 1
+    fi
+    local wait=$(( attempt * attempt + 3 ))
+    echo "  ⚠  ${desc} attempt ${attempt}/5 failed — retrying in ${wait}s"
+    sleep "${wait}"
+  done
+}
+
+# ── 1. Create or start the cluster ─────────────────────────────────────
 if k3d cluster list 2>/dev/null | grep -q "^${CLUSTER_NAME}"; then
   SERVERS=$(k3d cluster list | grep "^${CLUSTER_NAME}" | awk '{print $2}')
   echo "▶ Cluster '${CLUSTER_NAME}' exists (servers: ${SERVERS})"
@@ -35,16 +54,22 @@ k3d kubeconfig merge "${CLUSTER_NAME}" \
 echo "▶ Waiting for nodes..."
 kubectl wait --for=condition=Ready nodes --all --timeout=120s
 
-# ── 2. Knative Serving CRDs + core ──────────────────────────────────────
+# ── 2. Knative Serving CRDs + core ─────────────────────────────────────
 echo "▶ Installing Knative Serving CRDs..."
-kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml"
+apply_remote \
+  "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml" \
+  "Knative Serving CRDs"
 
 echo "▶ Installing Knative Serving core..."
-kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml"
+apply_remote \
+  "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml" \
+  "Knative Serving core"
 
-# ── 3. Kourier networking layer ─────────────────────────────────────────
+# ── 3. Kourier networking layer ────────────────────────────────────────
 echo "▶ Installing Kourier..."
-kubectl apply -f "https://github.com/knative-extensions/net-kourier/releases/download/knative-${KOURIER_VERSION}/kourier.yaml"
+apply_remote \
+  "https://github.com/knative-extensions/net-kourier/releases/download/knative-${KOURIER_VERSION}/kourier.yaml" \
+  "Kourier"
 
 echo "▶ Telling Knative to use Kourier..."
 kubectl patch configmap/config-network \
@@ -52,7 +77,7 @@ kubectl patch configmap/config-network \
   --type merge \
   --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
 
-# ── 4. Wait for components to come up ───────────────────────────────────
+# ── 4. Wait for components to come up ─────────────────────────────────
 echo "▶ Waiting for Knative Serving deployments..."
 for d in controller webhook activator autoscaler; do
   kubectl -n knative-serving rollout status deployment/"$d" --timeout=300s 2>/dev/null || \
@@ -65,14 +90,16 @@ for d in $(kubectl -n kourier-system get deploy -o name); do
     echo "  ⚠ $d not ready yet — check: kubectl get pods -n kourier-system"
 done
 
-# ── 5. Magic DNS (sslip.io) ─────────────────────────────────────────────
+# ── 5. Magic DNS (sslip.io) ────────────────────────────────────────────
 echo "▶ Configuring Magic DNS (sslip.io)..."
-kubectl apply -f "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-default-domain.yaml"
+apply_remote \
+  "https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-default-domain.yaml" \
+  "Knative magic DNS (serving-default-domain)"
 
 kubectl -n knative-serving wait --for=condition=Complete job/default-domain --timeout=120s 2>/dev/null || \
   echo "  ⚠ default-domain job still running — check: kubectl -n knative-serving get jobs"
 
-# ── 6. Status ───────────────────────────────────────────────────────────
+# ── 6. Status ──────────────────────────────────────────────────────────
 echo ""
 echo "================================================"
 echo "  ✅ Setup complete"
