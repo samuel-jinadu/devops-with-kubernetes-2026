@@ -6,6 +6,9 @@ metadata:
 spec:
   parentRefs:
     - name: exercises-gateway
+  hostnames:                        # <-- add
+    - localhost
+    - "*.sslip.io"
   rules:
     - matches:
         - path:
