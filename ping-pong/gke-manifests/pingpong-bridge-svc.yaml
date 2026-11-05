@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pingpong-gw
+  namespace: exercises
+spec:
+  type: ClusterIP
+  # Select the Knative-managed revision pods. Every pod the ksvc creates
+  # carries this label, and only these pods. The selector is "normal", so
+  # Kubernetes auto-creates EndpointSlices for this Service — which Envoy
+  # Gateway (unlike the Kourier-managed ksvc Service) can see.
+  selector:
+    serving.knative.dev/service: pingpong
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8012          # queue-proxy's http port
+      protocol: TCP

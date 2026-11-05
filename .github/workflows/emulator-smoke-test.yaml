@@ -557,6 +557,16 @@ jobs:
             kubectl -n envoy-gateway-system logs \
               -l control-plane=envoy-gateway --tail=100 --prefix || true
 
+            echo "=== endpoint slices for exercises services ==="
+            kubectl -n exercises get endpointslices \
+              -l 'kubernetes.io/service-name in (pingpong,pingpong-gw,pingpong-00001)' \
+              -o yaml || true
+
+            echo "=== legacy endpoints (should only be for ksvc/activator path) ==="
+            kubectl -n exercises get endpoints \
+              -l 'kubernetes.io/service-name in (pingpong,pingpong-gw,pingpong-00001)' \
+              2>/dev/null || true
+
             echo "=== envoy data-plane access/error logs ==="
             # Envoy Gateway's proxy container is called 'envoy'.
             kubectl -n envoy-gateway-system logs \
@@ -564,7 +574,7 @@ jobs:
               -c envoy --tail=300 2>&1 \
               | grep -Ei 'error|500|direct_response|no_route|via_upstream|response_code' \
               | tail -50 || true
-              
+
             echo "=== httproute ==="
             kubectl -n exercises get httproute pingpong-route -o yaml || true
 

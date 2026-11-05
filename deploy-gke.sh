@@ -263,6 +263,27 @@ PINGPONG_HOST=$(
 [ -z "$PINGPONG_HOST" ] && PINGPONG_HOST="pingpong.exercises.svc.cluster.local"
 echo "▶ /pingpong will rewrite Host → ${PINGPONG_HOST}"
 
+# Bridge Service: gives Envoy Gateway a Service-with-EndpointSlices fronting
+# the same pods. The ksvc-level Service "pingpong" is managed by Kourier via
+# the deprecated v1.Endpoints kind, which Envoy Gateway does not read.
+echo "▶ Applying pingpong-gw bridge Service..."
+kubectl apply -f ping-pong/gke-manifests/pingpong-bridge-svc.yaml
+
+echo "▶ Waiting for pingpong-gw to get endpoints..."
+for i in $(seq 1 30); do
+  if kubectl -n exercises get endpointslices \
+       -l kubernetes.io/service-name=pingpong-gw \
+       -o json 2>/dev/null | grep -q '"addresses"'; then
+    echo "  ✅ pingpong-gw has endpoints"
+    break
+  fi
+  sleep 1
+  if [ "$i" -eq 30 ]; then
+    echo "  ⚠  pingpong-gw has no endpoints yet (pod may not be Ready); continuing"
+  fi
+done
+
+echo "▶ Applying /pingpong HTTPRoute → pingpong-gw…"
 sed "s|__PINGPONG_HOST__|${PINGPONG_HOST}|g" \
   ping-pong/gke-manifests/httproute.yaml | kubectl apply -f -
 
